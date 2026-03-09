@@ -8,6 +8,7 @@ authors = [
 dependencies = [
     "nonebot2>=2.4.4",
     "nonebot-adapter-telegram>=0.1.0b20",
+    "tomli>=2.0.1; python_version < '3.11'",
 ]
 requires-python = ">=3.10"
 readme = "README.md"

@@ -5,7 +5,10 @@ import shutil
 import asyncio
 import inspect
 import secrets
-import tomllib
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - Python < 3.11
+    import tomli as tomllib
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import Any
