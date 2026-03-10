@@ -1,42 +1,75 @@
+<!-- markdownlint-disable MD033 MD041 -->
+<p align="center">
+  <a href="https://nonebot.dev/"><img src="https://nonebot.dev/logo.png" width="200" height="200" alt="nonebot"></a>
+</p>
+
 <div align="center">
 
 # nonebot-plugin-codex
 
 _✨ 在 Telegram 里驱动 Codex CLI 的 NoneBot 插件 ✨_
+<!-- **把本机 Codex CLI 接入 Telegram 的 NoneBot 插件** -->
 
-<a href="./LICENSE">
+让你直接在 Telegram 里发起 Codex 会话、续聊上下文、切换工作目录、浏览历史会话，把本地开发工作流搬进聊天窗口。
+
+<p>
+  <a href="https://github.com/ttiee/nonebot-plugin-codex/blob/main/LICENSE">
     <img src="https://img.shields.io/github/license/ttiee/nonebot-plugin-codex.svg" alt="license">
-</a>
-<a href="https://pypi.python.org/pypi/nonebot-plugin-codex">
+  </a>
+  <a href="https://pypi.org/project/nonebot-plugin-codex/">
     <img src="https://img.shields.io/pypi/v/nonebot-plugin-codex.svg" alt="pypi">
-</a>
-<img src="https://img.shields.io/badge/python-3.10+-blue.svg" alt="python">
+  </a>
+  <img src="https://img.shields.io/badge/python-3.10+-3776AB.svg" alt="python">
+  <img src="https://img.shields.io/badge/NoneBot-2.4.4+-00A7E1.svg" alt="nonebot">
+  <img src="https://img.shields.io/badge/adapter-Telegram-26A5E4.svg" alt="telegram">
+  <img src="https://img.shields.io/github/actions/workflow/status/ttiee/nonebot-plugin-codex/test.yml?branch=main&label=test" alt="test">
+</p>
 
 </div>
 
-## 介绍
+## 项目介绍
 
-`nonebot-plugin-codex` 把本机 `codex` CLI 包装成 Telegram 里的对话式插件。
+`nonebot-plugin-codex` 是一个面向 Telegram 场景的 NoneBot 插件，用来把本机 `codex` CLI 暴露为可对话、可续聊、可管理工作目录的聊天式开发助手。
 
-它保留了原 `codex_bridge` 的主要能力：
+它不是简单地把命令行输出转发到聊天窗口，而是围绕实际使用场景补齐了会话管理与状态管理能力：
 
-- Telegram 命令面板和普通消息续聊
-- `resume/native` 与 `exec` 双模式
-- 每个聊天独立的会话、模型、推理强度、权限、工作目录
-- 目录浏览器与历史会话浏览器
-- 兼容现有 `data/codex_bridge/preferences.json` 偏好文件和 `~/.codex/*` 历史数据
+- 同一聊天内持续续聊，保留上下文
+- 支持 `resume` 与 `exec` 两种运行模式
+- 每个聊天独立维护模型、推理强度、权限模式和工作目录
+- 可视化浏览目录与历史会话
+- 兼容既有 `codex_bridge` 偏好文件与 `~/.codex/*` 历史数据
 
-## 安装
+如果你已经习惯在本机使用 Codex，又希望通过 Telegram 远程发起编码、排查、审阅或文档整理任务，这个插件就是为这个场景设计的。
 
-### 使用 nb-cli
+## 核心特性
 
-在 NoneBot 项目根目录执行：
+- **聊天即入口**：`/codex` 连接后，普通文本消息可直接续聊当前会话。
+- **双模式工作流**：持续对话用 `resume`，一次性任务用 `exec`。
+- **细粒度会话隔离**：不同聊天各自持有模型、权限、工作目录与历史绑定。
+- **目录浏览能力**：支持在 Telegram 内切换目录、设定 Home、查看隐藏目录。
+- **历史会话恢复**：可浏览 native 与 exec 历史，并尽量恢复原始工作目录。
+- **兼容迁移**：可以沿用旧偏好文件与 Codex 历史目录，减少迁移成本。
+
+## 快速开始
+
+### 1. 准备运行环境
+
+确保满足以下条件：
+
+- Python `3.10+`
+- NoneBot `2.4.4+`
+- 已安装 `nonebot-adapter-telegram`
+- 目标主机上已安装并可直接调用 `codex`
+
+### 2. 安装插件
+
+在 NoneBot 项目根目录中执行其一：
 
 ```bash
 nb plugin install nonebot-plugin-codex
 ```
 
-### 使用包管理器
+或：
 
 ```bash
 pip install nonebot-plugin-codex
@@ -48,133 +81,170 @@ pip install nonebot-plugin-codex
 pdm add nonebot-plugin-codex
 ```
 
-然后在 `pyproject.toml` 的 `[tool.nonebot]` 中启用：
+### 3. 启用插件
+
+在 `pyproject.toml` 中启用：
 
 ```toml
+[tool.nonebot]
 plugins = ["nonebot_plugin_codex"]
 ```
 
-## 前置条件
-
-- Python 3.10+
-- NoneBot 2.4.4+
-- `nonebot-adapter-telegram`
-- 本机已安装并可直接执行 `codex`
-
-## 配置
-
-推荐使用以下正式配置名：
+### 4. 写入最小可用配置
 
 ```toml
 [tool.nonebot]
 plugins = ["nonebot_plugin_codex"]
 
 [tool.nonebot.plugin_config]
-# Codex 可执行文件名或绝对路径，默认直接调用 PATH 里的 `codex`
+codex_binary = "codex"
+codex_workdir = "/home/yourname"
+```
+
+如果你的 `codex` 不在 `PATH` 中，把 `codex_binary` 改成绝对路径即可。
+
+## 使用方式
+
+一个典型工作流通常是这样的：
+
+```text
+/codex 帮我检查当前仓库为什么测试失败
+/cd /home/yourname/projects/demo
+/permission danger
+/mode resume
+然后继续直接发送普通文本消息续聊
+```
+
+你也可以把一次性任务交给 `exec` 模式：
+
+```text
+/exec 用三点总结这个仓库 README 还缺什么
+```
+
+## 配置说明
+
+完整配置如下，配置名与当前实现保持一致：
+
+```toml
+[tool.nonebot]
+plugins = ["nonebot_plugin_codex"]
+
+[tool.nonebot.plugin_config]
+# Codex 可执行文件名或绝对路径，默认直接调用 PATH 中的 `codex`
 codex_binary = "codex"
 
-# 默认工作目录；新会话、目录浏览器 Home 入口、相对路径解析都会基于它
+# 默认工作目录；新会话、目录浏览器 Home 入口、相对路径解析都基于它
 codex_workdir = "/home/yourname"
 
-# `/stop` 或重置会话时，等待 Codex 子进程退出的超时时间（秒）
+# `/stop` 或重置会话时，等待 Codex 子进程退出的超时时间，单位秒
 codex_kill_timeout = 5.0
 
-# 运行中在 Telegram 里保留多少条“进度日志”
+# 运行中在 Telegram 中保留的进度消息条数
 codex_progress_history = 6
 
-# 运行失败时最多保留多少条诊断输出，便于排查问题
+# 运行失败时最多保留多少条诊断输出
 codex_diagnostic_history = 20
 
-# 单条 Telegram 消息的分片长度；回复太长时会自动拆分
+# 单条 Telegram 消息的分片长度，过长回复会自动拆分
 codex_chunk_size = 3500
 
-# 读取 Codex stdout/stderr 的缓冲区大小
+# 读取 Codex stdout / stderr 的缓冲区大小
 codex_stream_read_limit = 1048576
 
-# Codex 本地模型缓存文件；`/models`、`/model` 会读取这里
+# Codex 模型缓存文件；`/models` 和 `/model` 会读取它
 codex_models_cache_path = "/home/yourname/.codex/models_cache.json"
 
-# Codex CLI 的配置文件；会从这里读取默认模型和推理强度
+# Codex CLI 配置文件；会从这里读取默认模型和推理强度
 codex_codex_config_path = "/home/yourname/.codex/config.toml"
 
-# 插件保存“每个聊天偏好设置”的文件，例如模型、权限、工作目录、默认模式
+# 插件自己的偏好文件，保存每个聊天的模型、权限、工作目录和默认模式
 codex_preferences_path = "data/codex_bridge/preferences.json"
 
-# Codex 历史会话索引；`/sessions` 会先读它来列出 exec 历史
+# Codex 历史会话索引；`/sessions` 会先读取这里
 codex_session_index_path = "/home/yourname/.codex/session_index.jsonl"
 
-# Codex 当前会话日志目录；用于补充历史会话的标题、预览和 cwd 信息
+# Codex 当前会话日志目录；用于补充标题、预览和 cwd 信息
 codex_sessions_dir = "/home/yourname/.codex/sessions"
 
 # Codex 归档会话目录；历史浏览也会读取这里
 codex_archived_sessions_dir = "/home/yourname/.codex/archived_sessions"
 ```
 
-- `codex_binary`：如果你的机器上不是直接执行 `codex`，这里改成绝对路径。
-- `codex_workdir`：最重要的配置之一。它决定插件默认在哪个目录里运行 Codex，也影响 `/cd` 相对路径的解析基准。
-- `codex_preferences_path`：这是插件自己的状态文件，不是 Codex 官方文件。删掉它会丢失每个聊天保存的模型、权限、工作目录和默认模式。
-- `codex_models_cache_path`、`codex_codex_config_path`：这是读取 Codex 本机配置和模型信息用的，通常保持默认即可。
-- `codex_session_index_path`、`codex_sessions_dir`、`codex_archived_sessions_dir`：这是历史会话浏览功能依赖的路径；如果你改了 Codex 的数据目录，这三项要一起对应修改。
+几个最关键的配置项：
 
-## 命令
+- `codex_binary`：如果宿主机不是直接执行 `codex`，改成实际绝对路径。
+- `codex_workdir`：默认工作目录，也是 `/cd` 相对路径解析与目录浏览器 Home 的基准。
+- `codex_preferences_path`：插件自身状态文件，不属于 Codex 官方目录，删除后会丢失各聊天保存的偏好。
+- `codex_models_cache_path`、`codex_codex_config_path`：用于读取本地模型和默认配置，通常保持默认值即可。
+- `codex_session_index_path`、`codex_sessions_dir`、`codex_archived_sessions_dir`：历史会话浏览依赖这三项；如果你的 Codex 数据目录自定义过，需要同步修改。
 
-- `/codex [prompt]` 连接 Codex；带 prompt 时直接发送
-- `/mode [resume|exec]` 查看或切换默认模式
-- `/exec <prompt>` 用一次性 `exec` 模式执行
-- `/new` 清空当前聊天绑定的会话
-- `/stop` 断开当前聊天的 Codex 会话
-- `/models` 查看可用模型
-- `/model [slug]` 查看或切换模型
-- `/effort [high|xhigh]` 查看或切换推理强度
-- `/permission [safe|danger]` 查看或切换权限模式
-- `/pwd` 查看当前工作目录和当前设置
-- `/cd [path]` 直接切目录；不带参数时打开目录浏览器
-- `/home` 将工作目录重置到 Home
-- `/sessions` 打开历史会话浏览器
+## 命令一览
 
-在 `/codex` 连接后，普通文本消息会自动续聊当前会话。
+| 命令 | 说明 |
+| --- | --- |
+| `/codex [prompt]` | 连接 Codex，会附带发送首条 prompt |
+| `/mode [resume\|exec]` | 查看或切换默认模式 |
+| `/exec <prompt>` | 以一次性 `exec` 模式执行任务 |
+| `/new` | 清空当前聊天绑定的会话 |
+| `/stop` | 断开当前聊天的 Codex 会话 |
+| `/models` | 查看可用模型 |
+| `/model [slug]` | 查看或切换模型 |
+| `/effort [high\|xhigh]` | 查看或切换推理强度 |
+| `/permission [safe\|danger]` | 查看或切换权限模式 |
+| `/pwd` | 查看当前工作目录与当前设置 |
+| `/cd [path]` | 直接切换目录；不带参数时打开目录浏览器 |
+| `/home` | 将工作目录重置到 Home |
+| `/sessions` | 打开历史会话浏览器 |
 
 ## 模式说明
 
 ### `resume`
 
+适合需要持续上下文的对话式场景：
+
 - 优先使用 `codex app-server`
 - 为同一聊天维持 native thread
-- 更适合持续对话
+- 更适合连续编码、持续追问和多轮调试
 
 ### `exec`
+
+适合一次性任务或脚本式调用：
 
 - 使用 `codex exec --json`
 - 支持恢复已有 exec thread
 - 恢复失败时会自动新开会话并提示
 
-## 目录与历史浏览
+## 目录与历史会话
 
-- `/cd` 会打开目录浏览器，可逐级进入、切换 Home、显示隐藏目录，并将当前浏览目录设为工作目录
-- `/sessions` 会列出 native 与 exec 历史会话
-- 历史会话恢复时会尝试切回原始工作目录；目录不存在时会保留当前目录并提示
+- `/cd` 可打开目录浏览器，逐级进入目录、切换 Home、显示隐藏目录，并把当前浏览目录设置为工作目录。
+- `/sessions` 会列出 native 与 exec 历史会话，便于恢复此前任务。
+- 历史会话恢复时会尝试切回原始工作目录；如果原目录不存在，会保留当前目录并给出提示。
 
-## 兼容说明
+## 兼容与迁移
 
-- 默认偏好文件仍然是 `data/codex_bridge/preferences.json`
-- 历史会话仍然读取 `~/.codex/session_index.jsonl`、`~/.codex/sessions`、`~/.codex/archived_sessions`
-- 这意味着可以从现有 `~/tg_bot/plugins/codex_bridge` 平滑迁入，不需要额外迁移脚本
+这个插件保留了与旧 `codex_bridge` 的兼容路径：
 
-## 发布
+- 默认偏好文件仍为 `data/codex_bridge/preferences.json`
+- 历史会话仍读取 `~/.codex/session_index.jsonl`
+- 当前与归档会话目录仍为 `~/.codex/sessions`、`~/.codex/archived_sessions`
 
-仓库自带 GitHub Actions：
+这意味着如果你之前使用的是旧目录布局，通常可以平滑迁入，而不需要额外编写迁移脚本。
 
-- `test.yml` 负责安装依赖并运行测试
-- `release.yml` 在打 `v*` tag 时执行 `pdm publish` 并上传构建产物
+## 发布说明
 
-发布前请先在 PyPI 的 Trusted Publishing 中添加：
+仓库已包含基础发布流程：
+
+- `test.yml`：安装依赖并运行测试
+- `release.yml`：在推送 `v*` 标签时执行 `pdm publish` 并上传构建产物
+
+如果你要启用 PyPI Trusted Publishing，请在 PyPI 项目设置中添加以下信息：
 
 - Project name: `nonebot-plugin-codex`
 - Owner: `ttiee`
 - Repository name: `nonebot-plugin-codex`
 - Workflow name: `release.yml`
 
-## 开发
+## 本地开发
 
 ```bash
 pdm sync -G:all
@@ -182,3 +252,7 @@ pdm run pytest
 pdm run ruff check .
 pdm build
 ```
+
+## License
+
+本项目使用 [GPL-3.0-or-later](https://github.com/ttiee/nonebot-plugin-codex/blob/main/LICENSE) 许可证。
