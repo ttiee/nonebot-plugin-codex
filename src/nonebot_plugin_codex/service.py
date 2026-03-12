@@ -25,7 +25,6 @@ ProcessLauncher = Callable[..., Awaitable[Any]]
 WhichResolver = Callable[[str], str | None]
 
 VISIBLE_MODEL = "list"
-SUPPORTED_EFFORT_COMMANDS = {"high", "xhigh"}
 SUPPORTED_PERMISSION_MODES = {"safe", "danger"}
 FALLBACK_MODEL = "gpt-5"
 FALLBACK_REASONING_EFFORT = "high"
@@ -488,7 +487,7 @@ class CodexBridgeService:
         self._native_history_entries: list[HistoricalSessionSummary] = []
         self._native_history_loaded = False
 
-    def _configured_workdir(self) -> str:
+    def configured_workdir(self) -> str:
         configured = Path(self.settings.workdir).expanduser()
         try:
             return str(configured.resolve())
@@ -1666,7 +1665,7 @@ class CodexBridgeService:
                 workdir=(
                     workdir
                     if isinstance(workdir, str) and workdir
-                    else self._configured_workdir()
+                    else self.configured_workdir()
                 ),
                 default_mode=(
                     default_mode
@@ -1743,7 +1742,7 @@ class CodexBridgeService:
             model=model_slug,
             reasoning_effort=effort,
             permission_mode="safe",
-            workdir=self._configured_workdir(),
+            workdir=self.configured_workdir(),
             default_mode="resume",
         )
 
@@ -1970,7 +1969,7 @@ class CodexBridgeService:
         if action == "home":
             return self._replace_browser_state(
                 chat_key,
-                self._configured_workdir(),
+                self.configured_workdir(),
                 page=0,
                 previous=browser,
             )
@@ -2216,14 +2215,13 @@ class CodexBridgeService:
 
     async def update_reasoning_effort(self, chat_key: str, effort: str) -> str:
         self._ensure_not_running(chat_key)
-        if effort not in SUPPORTED_EFFORT_COMMANDS:
-            raise ValueError("仅支持 high 或 xhigh。")
-
         current = self.get_preferences(chat_key)
         model = self.load_models().get(current.model)
         if model is None:
             raise ValueError("当前模型不在本地缓存中。")
         if effort not in model.supported_reasoning_levels:
+            if not model.supported_reasoning_levels:
+                raise ValueError("当前模型未声明可用推理强度。")
             supported = ", ".join(model.supported_reasoning_levels)
             raise ValueError(f"当前模型仅支持：{supported}")
 

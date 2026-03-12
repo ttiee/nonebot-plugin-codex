@@ -267,3 +267,25 @@ async def test_apply_permission_setting_panel_updates_preference(
 
     assert "danger" in notice
     assert service.get_preferences("private_1").permission_mode == "danger"
+
+
+@pytest.mark.asyncio
+async def test_apply_effort_setting_panel_accepts_model_supported_medium(
+    tmp_path: Path,
+    model_cache_with_medium_file: Path,
+) -> None:
+    service = make_service(tmp_path, model_cache_with_medium_file)
+    panel = service.open_setting_panel("private_1", "effort")
+    text, _ = service.render_setting_panel("private_1")
+
+    assert "medium" in text
+
+    notice = await service.apply_setting_panel_selection(
+        "private_1",
+        panel.token,
+        panel.version,
+        "medium",
+    )
+
+    assert "medium" in notice
+    assert service.get_preferences("private_1").reasoning_effort == "medium"

@@ -551,7 +551,7 @@ class TelegramHandlers:
         try:
             notice = await self.service.update_workdir(
                 self.chat_key(event),
-                self.service.settings.workdir,
+                self.service.configured_workdir(),
             )
             await self.send_event_message(bot, event, notice)
         except (ValueError, RuntimeError) as exc:

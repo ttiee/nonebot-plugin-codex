@@ -13,6 +13,7 @@ from nonebot_plugin_codex.service import (
     CodexBridgeService,
     CodexBridgeSettings,
     encode_browser_callback,
+    encode_setting_callback,
 )
 
 
@@ -111,6 +112,9 @@ class FakeService:
 
     def describe_preferences(self, chat_key: str) -> str:
         return "模型: gpt-5 | 推理: xhigh | 权限: safe"
+
+    def configured_workdir(self) -> str:
+        return self.settings.workdir
 
     async def run_prompt(
         self,
@@ -240,6 +244,29 @@ class FakeService:
         return f"当前默认模式：{mode}"
 
 
+def make_real_service(
+    tmp_path: Path,
+    model_cache_file: Path,
+    *,
+    workdir: str | None = None,
+) -> CodexBridgeService:
+    codex_config = tmp_path / "config.toml"
+    codex_config.write_text('model = "gpt-5"\nmodel_reasoning_effort = "xhigh"\n')
+    return CodexBridgeService(
+        CodexBridgeSettings(
+            binary="codex",
+            workdir=workdir or str(tmp_path),
+            models_cache_path=model_cache_file,
+            codex_config_path=codex_config,
+            preferences_path=tmp_path / "data" / "codex_bridge" / "preferences.json",
+            session_index_path=tmp_path / ".codex" / "session_index.jsonl",
+            sessions_dir=tmp_path / ".codex" / "sessions",
+            archived_sessions_dir=tmp_path / ".codex" / "archived_sessions",
+        ),
+        which_resolver=lambda _: "/usr/bin/codex",
+    )
+
+
 def make_real_service_without_model_cache(tmp_path: Path) -> CodexBridgeService:
     codex_config = tmp_path / "config.toml"
     codex_config.write_text('model = "gpt-5"\nmodel_reasoning_effort = "xhigh"\n')
@@ -341,6 +368,34 @@ async def test_handle_home_uses_configured_workdir() -> None:
 
 
 @pytest.mark.asyncio
+async def test_handle_home_resolves_relative_configured_workdir(
+    tmp_path: Path,
+    model_cache_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    configured_home = tmp_path / "workspace" / "default"
+    configured_home.mkdir(parents=True)
+    moved_dir = tmp_path / "workspace" / "other"
+    moved_dir.mkdir(parents=True)
+    service = make_real_service(
+        tmp_path,
+        model_cache_file,
+        workdir="workspace/default",
+    )
+    handlers = TelegramHandlers(service)
+    bot = FakeBot()
+    await service.update_workdir("private_1", str(moved_dir))
+
+    await handlers.handle_home(bot, FakeEvent(""))
+
+    assert bot.sent[0]["text"].startswith(f"当前工作目录：{configured_home.resolve()}")
+    assert service.get_preferences("private_1").workdir == str(
+        configured_home.resolve()
+    )
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("handler_name", "kind", "expected_text"),
     [
@@ -387,6 +442,26 @@ async def test_handle_setting_callback_updates_setting() -> None:
 
     assert service.setting_updates == ["danger"]
     assert bot.answered[0]["text"] == "已更新。"
+
+
+@pytest.mark.asyncio
+async def test_handle_setting_callback_updates_effort_when_model_supports_medium(
+    tmp_path: Path,
+    model_cache_with_medium_file: Path,
+) -> None:
+    service = make_real_service(tmp_path, model_cache_with_medium_file)
+    handlers = TelegramHandlers(service)
+    bot = FakeBot()
+    panel = service.open_setting_panel("private_1", "effort")
+    event = FakeCallbackEvent(
+        encode_setting_callback(panel.token, panel.version, "set", "medium")
+    )
+
+    await handlers.handle_setting_callback(bot, event)
+
+    assert bot.answered[0]["text"] == "已更新。"
+    assert service.get_preferences("private_1").reasoning_effort == "medium"
+    assert "当前推理强度：medium" in bot.edited[0]["text"]
 
 
 @pytest.mark.asyncio

@@ -39,3 +39,31 @@ def model_cache_file(tmp_path: Path) -> Path:
         encoding="utf-8",
     )
     return path
+
+
+@pytest.fixture
+def model_cache_with_medium_file(tmp_path: Path) -> Path:
+    path = tmp_path / "models_cache_with_medium.json"
+    path.write_text(
+        json.dumps(
+            {
+                "models": [
+                    {
+                        "slug": "gpt-5",
+                        "display_name": "GPT-5",
+                        "visibility": "list",
+                        "priority": 1,
+                        "default_reasoning_level": "medium",
+                        "supported_reasoning_levels": [
+                            {"effort": "medium"},
+                            {"effort": "high"},
+                            {"effort": "xhigh"},
+                        ],
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    return path
