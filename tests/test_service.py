@@ -52,6 +52,24 @@ def make_service(
     )
 
 
+def make_service_without_model_cache(tmp_path: Path) -> CodexBridgeService:
+    codex_config = tmp_path / "config.toml"
+    codex_config.write_text('model = "gpt-5"\nmodel_reasoning_effort = "xhigh"\n')
+    return CodexBridgeService(
+        CodexBridgeSettings(
+            binary="codex",
+            workdir=str(tmp_path),
+            models_cache_path=tmp_path / "missing-models.json",
+            codex_config_path=codex_config,
+            preferences_path=tmp_path / "data" / "codex_bridge" / "preferences.json",
+            session_index_path=tmp_path / ".codex" / "session_index.jsonl",
+            sessions_dir=tmp_path / ".codex" / "sessions",
+            archived_sessions_dir=tmp_path / ".codex" / "archived_sessions",
+        ),
+        which_resolver=lambda _: "/usr/bin/codex",
+    )
+
+
 def test_build_exec_argv_for_safe_and_resume_mode() -> None:
     argv = build_exec_argv(
         "codex",
@@ -76,6 +94,18 @@ def test_default_preferences_use_configured_workdir(
 
     preferences = service.get_preferences("private_1")
 
+    assert preferences.workdir == str(tmp_path.resolve())
+
+
+def test_default_preferences_use_codex_config_when_model_cache_is_missing(
+    tmp_path: Path,
+) -> None:
+    service = make_service_without_model_cache(tmp_path)
+
+    preferences = service.get_preferences("private_1")
+
+    assert preferences.model == "gpt-5"
+    assert preferences.reasoning_effort == "xhigh"
     assert preferences.workdir == str(tmp_path.resolve())
 
 

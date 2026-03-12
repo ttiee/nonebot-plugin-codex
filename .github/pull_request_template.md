@@ -1,21 +1,20 @@
-## Summary
+## 变更摘要
 
 - 
 
-## Linked Issue
+## 关联 Issue
 
 Closes #
 
-## What Changed
+## 具体改动
 
 - 
 
-## Verification
+## 验证
 
 - [ ] `pdm run pytest -q`
 - [ ] `pdm run ruff check .`
 
-## Risks / Follow-Ups
+## 风险 / 后续项
 
 - 
-

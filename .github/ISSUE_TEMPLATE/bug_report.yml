@@ -1,78 +1,77 @@
-name: Bug Report
-description: Report a confirmed defect or regression
-title: "bug: "
+name: 问题反馈
+description: 报告已确认的缺陷或回归问题
+title: "问题："
 labels:
   - bug
 body:
   - type: markdown
     attributes:
       value: |
-        Provide a reproducible report. Include exact commands, config, and observed behavior.
+        请尽量提供可复现的信息，包括命令、配置、实际表现和预期结果。
 
   - type: input
     id: summary
     attributes:
-      label: Summary
-      description: One-sentence description of the bug
-      placeholder: codex_workdir is ignored by /home and the directory browser Home action
+      label: 问题概述
+      description: 用一句话描述你遇到的问题
+      placeholder: codex_workdir 在 /home 和目录浏览器的 Home 按钮中没有生效
     validations:
       required: true
 
   - type: textarea
     id: environment
     attributes:
-      label: Environment
-      description: Python, PDM, NoneBot, adapter, OS, and any relevant Codex setup details
+      label: 运行环境
+      description: 填写 Python、PDM、NoneBot、适配器、操作系统以及相关 Codex 环境信息
       placeholder: |
-        Python:
-        PDM:
-        NoneBot:
-        Adapter:
-        OS:
-        Codex CLI:
+        Python 版本：
+        PDM 版本：
+        NoneBot 版本：
+        Adapter 版本：
+        操作系统：
+        Codex CLI：
     validations:
       required: true
 
   - type: textarea
     id: reproduce
     attributes:
-      label: Steps To Reproduce
-      description: Provide exact steps or commands
+      label: 复现步骤
+      description: 提供可以稳定复现问题的步骤或命令
       placeholder: |
-        1. Configure codex_workdir = "/tmp/work"
-        2. Start the bot
-        3. Run /home
-        4. Observe the reported workdir
+        1. 配置 codex_workdir = "/tmp/work"
+        2. 启动机器人
+        3. 执行 /home
+        4. 观察返回的工作目录
     validations:
       required: true
 
   - type: textarea
     id: expected
     attributes:
-      label: Expected Behavior
+      label: 预期行为
     validations:
       required: true
 
   - type: textarea
     id: actual
     attributes:
-      label: Actual Behavior
+      label: 实际行为
     validations:
       required: true
 
   - type: textarea
     id: evidence
     attributes:
-      label: Verification Evidence
-      description: Include failing tests, logs, screenshots, or command output summaries
+      label: 补充信息
+      description: 可填写失败测试、日志、截图或命令输出摘要
 
   - type: textarea
     id: affected
     attributes:
-      label: Affected Files Or Commands
+      label: 相关文件或命令
       placeholder: |
         src/nonebot_plugin_codex/service.py
         src/nonebot_plugin_codex/telegram.py
         /home
         /cd
-

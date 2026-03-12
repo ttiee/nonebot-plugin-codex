@@ -1,6 +1,5 @@
 blank_issues_enabled: false
 contact_links:
-  - name: Repository Plans
+  - name: 仓库规划文档
     url: https://github.com/ttiee/nonebot-plugin-codex/tree/main/docs/plans
-    about: Review existing design and implementation planning documents before opening broad-scoped requests.
-
+    about: 在提交范围较大的请求前，请先查看现有设计文档和实现计划。

@@ -27,6 +27,8 @@ WhichResolver = Callable[[str], str | None]
 VISIBLE_MODEL = "list"
 SUPPORTED_EFFORT_COMMANDS = {"high", "xhigh"}
 SUPPORTED_PERMISSION_MODES = {"safe", "danger"}
+FALLBACK_MODEL = "gpt-5"
+FALLBACK_REASONING_EFFORT = "high"
 BROWSER_CALLBACK_PREFIX = "cdb"
 BROWSER_PAGE_SIZE = 8
 BROWSER_FILE_SUMMARY_LIMIT = 10
@@ -1727,12 +1729,18 @@ class CodexBridgeService:
         return model.default_reasoning_level
 
     def _default_preferences(self) -> ChatPreferences:
-        models = self.load_models()
-        model = self._pick_default_model(models)
-        _, configured_effort = self._load_codex_defaults()
-        effort = self._normalize_effort(model, configured_effort)
+        configured_model, configured_effort = self._load_codex_defaults()
+        try:
+            models = self.load_models()
+        except (FileNotFoundError, ValueError):
+            model_slug = configured_model or FALLBACK_MODEL
+            effort = configured_effort or FALLBACK_REASONING_EFFORT
+        else:
+            model = self._pick_default_model(models)
+            effort = self._normalize_effort(model, configured_effort)
+            model_slug = model.slug
         return ChatPreferences(
-            model=model.slug,
+            model=model_slug,
             reasoning_effort=effort,
             permission_mode="safe",
             workdir=self._configured_workdir(),

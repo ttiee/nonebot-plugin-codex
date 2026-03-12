@@ -1,51 +1,50 @@
-name: Feature Request
-description: Propose an improvement or new capability
-title: "feat: "
+name: 功能请求
+description: 提议一个改进或新能力
+title: "功能："
 labels:
   - enhancement
 body:
   - type: markdown
     attributes:
       value: |
-        Describe the user problem first, then the proposed solution.
+        请先描述用户问题，再说明你希望的解决方案。
 
   - type: input
     id: summary
     attributes:
-      label: Summary
-      placeholder: Add button panels for mode/model/effort/permission commands
+      label: 功能概述
+      placeholder: 为 /mode、/model、/effort、/permission 增加按钮面板
     validations:
       required: true
 
   - type: textarea
     id: problem
     attributes:
-      label: Problem Statement
-      description: What is hard, missing, or error-prone today?
+      label: 问题背景
+      description: 当前使用上有什么困难、缺失或容易出错的地方？
     validations:
       required: true
 
   - type: textarea
     id: proposal
     attributes:
-      label: Proposed Solution
+      label: 建议方案
     validations:
       required: true
 
   - type: textarea
     id: alternatives
     attributes:
-      label: Alternatives Considered
+      label: 备选方案
 
   - type: textarea
     id: scope
     attributes:
-      label: Scope And Constraints
-      description: Compatibility, migration, UX, or testing constraints that matter
+      label: 范围与约束
+      description: 这里填写兼容性、迁移、交互或测试方面的约束
 
   - type: textarea
     id: verification
     attributes:
-      label: Verification Plan
-      description: Tests, manual checks, or rollout validation you expect
-
+      label: 验证计划
+      description: 希望如何验证这个功能，例如测试、手工检查或上线确认

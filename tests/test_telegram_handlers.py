@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 from types import SimpleNamespace
 from dataclasses import field, dataclass
@@ -7,7 +8,12 @@ from dataclasses import field, dataclass
 import pytest
 
 from nonebot_plugin_codex.telegram import TelegramHandlers
-from nonebot_plugin_codex.service import ChatSession, encode_browser_callback
+from nonebot_plugin_codex.service import (
+    ChatSession,
+    CodexBridgeService,
+    CodexBridgeSettings,
+    encode_browser_callback,
+)
 
 
 @dataclass
@@ -234,6 +240,24 @@ class FakeService:
         return f"当前默认模式：{mode}"
 
 
+def make_real_service_without_model_cache(tmp_path: Path) -> CodexBridgeService:
+    codex_config = tmp_path / "config.toml"
+    codex_config.write_text('model = "gpt-5"\nmodel_reasoning_effort = "xhigh"\n')
+    return CodexBridgeService(
+        CodexBridgeSettings(
+            binary="codex",
+            workdir=str(tmp_path),
+            models_cache_path=tmp_path / "missing-models.json",
+            codex_config_path=codex_config,
+            preferences_path=tmp_path / "data" / "codex_bridge" / "preferences.json",
+            session_index_path=tmp_path / ".codex" / "session_index.jsonl",
+            sessions_dir=tmp_path / ".codex" / "sessions",
+            archived_sessions_dir=tmp_path / ".codex" / "archived_sessions",
+        ),
+        which_resolver=lambda _: "/usr/bin/codex",
+    )
+
+
 @pytest.mark.asyncio
 async def test_handle_codex_without_prompt_sends_status_message() -> None:
     service = FakeService()
@@ -363,3 +387,29 @@ async def test_handle_setting_callback_updates_setting() -> None:
 
     assert service.setting_updates == ["danger"]
     assert bot.answered[0]["text"] == "已更新。"
+
+
+@pytest.mark.asyncio
+async def test_handle_pwd_works_when_model_cache_is_missing(tmp_path: Path) -> None:
+    service = make_real_service_without_model_cache(tmp_path)
+    handlers = TelegramHandlers(service)
+    bot = FakeBot()
+
+    await handlers.handle_pwd(bot, FakeEvent(""))
+
+    assert "当前工作目录" in bot.sent[0]["text"]
+    assert "模型: gpt-5" in bot.sent[0]["text"]
+
+
+@pytest.mark.asyncio
+async def test_handle_codex_without_prompt_works_when_model_cache_is_missing(
+    tmp_path: Path,
+) -> None:
+    service = make_real_service_without_model_cache(tmp_path)
+    handlers = TelegramHandlers(service)
+    bot = FakeBot()
+
+    await handlers.handle_codex(bot, FakeEvent(""), FakeMessage(""))
+
+    assert "Codex 已连接" in bot.sent[0]["text"]
+    assert "模型: gpt-5" in bot.sent[0]["text"]
