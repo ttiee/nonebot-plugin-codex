@@ -4,7 +4,6 @@ import re
 import time
 import asyncio
 from typing import Any
-from pathlib import Path
 
 from nonebot.adapters.telegram import Bot
 from nonebot.adapters.telegram.message import Message
@@ -16,14 +15,16 @@ from .service import (
     HISTORY_STALE_MESSAGE,
     BROWSER_CALLBACK_PREFIX,
     HISTORY_CALLBACK_PREFIX,
+    SETTING_STALE_MESSAGE,
+    SETTING_CALLBACK_PREFIX,
     CodexBridgeService,
     chunk_text,
     build_chat_key,
     format_result_text,
     decode_browser_callback,
     decode_history_callback,
+    decode_setting_callback,
     should_forward_follow_up,
-    format_preferences_summary,
 )
 
 RETRY_AFTER_PATTERN = re.compile(r"retry after (\d+(?:\.\d+)?)", re.IGNORECASE)
@@ -281,6 +282,11 @@ class TelegramHandlers:
             f"{HISTORY_CALLBACK_PREFIX}:"
         )
 
+    async def is_setting_callback(self, event: CallbackQueryEvent) -> bool:
+        return isinstance(event.data, str) and event.data.startswith(
+            f"{SETTING_CALLBACK_PREFIX}:"
+        )
+
     def callback_message_id(self, event: CallbackQueryEvent) -> int | None:
         message = getattr(event, "message", None)
         return getattr(message, "message_id", None)
@@ -303,6 +309,22 @@ class TelegramHandlers:
         self.service.remember_history_browser_message(
             chat_key,
             browser.token,
+            getattr(message, "message_id", None),
+        )
+
+    async def send_setting_panel(
+        self,
+        bot: Bot,
+        event: MessageEvent,
+        chat_key: str,
+        kind: str,
+    ) -> None:
+        panel = self.service.open_setting_panel(chat_key, kind)
+        text, markup = self.service.render_setting_panel(chat_key)
+        message = await self.send_event_message(bot, event, text, reply_markup=markup)
+        self.service.remember_setting_panel_message(
+            chat_key,
+            panel.token,
             getattr(message, "message_id", None),
         )
 
@@ -370,6 +392,37 @@ class TelegramHandlers:
                 getattr(message, "message_id", None),
             )
 
+    async def edit_or_resend_setting_panel(
+        self,
+        bot: Bot,
+        event: CallbackQueryEvent,
+        chat_key: str,
+    ) -> None:
+        panel = self.service.get_setting_panel(chat_key)
+        text, markup = self.service.render_setting_panel(chat_key)
+        message_id = self.callback_message_id(event) or panel.message_id
+        chat_id = self.event_chat(event).id
+        try:
+            if message_id is None:
+                raise ValueError("missing message id")
+            await self.edit_message(
+                bot,
+                chat_id=chat_id,
+                message_id=message_id,
+                text=text,
+                reply_markup=markup,
+            )
+            self.service.remember_setting_panel_message(chat_key, panel.token, message_id)
+        except Exception:
+            message = await self.send_chat_message(
+                bot, chat_id, text, reply_markup=markup
+            )
+            self.service.remember_setting_panel_message(
+                chat_key,
+                panel.token,
+                getattr(message, "message_id", None),
+            )
+
     async def handle_codex(self, bot: Bot, event: MessageEvent, args: Message) -> None:
         chat_key = self.chat_key(event)
         session = self.service.activate_chat(chat_key)
@@ -399,19 +452,13 @@ class TelegramHandlers:
     async def handle_mode(self, bot: Bot, event: MessageEvent, args: Message) -> None:
         chat_key = self.chat_key(event)
         mode = args.extract_plain_text().strip()
-        if not mode:
-            preferences = self.service.get_preferences(chat_key)
-            session = self.service.get_session(chat_key)
-            await self.send_event_message(
-                bot,
-                event,
-                f"当前默认模式：{preferences.default_mode}\n当前活跃模式：{session.active_mode}",
-            )
-            return
         try:
+            if not mode:
+                await self.send_setting_panel(bot, event, chat_key, "mode")
+                return
             notice = await self.service.update_default_mode(chat_key, mode)
             await self.send_event_message(bot, event, notice)
-        except (ValueError, RuntimeError) as exc:
+        except (FileNotFoundError, ValueError, RuntimeError) as exc:
             await self.send_event_message(bot, event, self.error_text(exc))
 
     async def handle_exec(self, bot: Bot, event: MessageEvent, args: Message) -> None:
@@ -448,17 +495,8 @@ class TelegramHandlers:
         chat_key = self.chat_key(event)
         slug = args.extract_plain_text().strip()
         try:
-            preferences = self.service.get_preferences(chat_key)
             if not slug:
-                efforts = "/".join(self.service.get_supported_efforts(preferences.model))
-                await self.send_event_message(
-                    bot,
-                    event,
-                    (
-                        f"当前设置：{format_preferences_summary(preferences)}\n"
-                        f"当前模型支持推理强度：{efforts}"
-                    ),
-                )
+                await self.send_setting_panel(bot, event, chat_key, "model")
                 return
             notice = await self.service.update_model(chat_key, slug)
             await self.send_event_message(bot, event, notice)
@@ -469,17 +507,8 @@ class TelegramHandlers:
         chat_key = self.chat_key(event)
         effort = args.extract_plain_text().strip()
         try:
-            preferences = self.service.get_preferences(chat_key)
-            supported = "/".join(self.service.get_supported_efforts(preferences.model))
             if not effort:
-                await self.send_event_message(
-                    bot,
-                    event,
-                    (
-                        f"当前推理强度：{preferences.reasoning_effort}\n"
-                        f"当前模型 `{preferences.model}` 支持：{supported}"
-                    ),
-                )
+                await self.send_setting_panel(bot, event, chat_key, "effort")
                 return
             notice = await self.service.update_reasoning_effort(chat_key, effort)
             await self.send_event_message(bot, event, notice)
@@ -492,16 +521,8 @@ class TelegramHandlers:
         chat_key = self.chat_key(event)
         permission = args.extract_plain_text().strip()
         try:
-            preferences = self.service.get_preferences(chat_key)
             if not permission:
-                await self.send_event_message(
-                    bot,
-                    event,
-                    (
-                        f"当前权限模式：{preferences.permission_mode}\n"
-                        "safe = workspace-write，danger = 绕过审批与沙箱。"
-                    ),
-                )
+                await self.send_setting_panel(bot, event, chat_key, "permission")
                 return
             notice = await self.service.update_permission_mode(chat_key, permission)
             await self.send_event_message(bot, event, notice)
@@ -529,7 +550,8 @@ class TelegramHandlers:
     async def handle_home(self, bot: Bot, event: MessageEvent) -> None:
         try:
             notice = await self.service.update_workdir(
-                self.chat_key(event), str(Path.home())
+                self.chat_key(event),
+                self.service.settings.workdir,
             )
             await self.send_event_message(bot, event, notice)
         except (ValueError, RuntimeError) as exc:
@@ -630,6 +652,54 @@ class TelegramHandlers:
                 event.id,
                 text=text,
                 show_alert=text == HISTORY_STALE_MESSAGE,
+            )
+        except RuntimeError as exc:
+            await bot.answer_callback_query(
+                event.id, text=self.error_text(exc), show_alert=True
+            )
+
+    async def handle_setting_callback(self, bot: Bot, event: CallbackQueryEvent) -> None:
+        if not isinstance(event.data, str):
+            await bot.answer_callback_query(
+                event.id, text=SETTING_STALE_MESSAGE, show_alert=True
+            )
+            return
+
+        try:
+            chat_key = self.chat_key(event)
+            chat_id = self.event_chat(event).id
+            token, version, action, value = decode_setting_callback(event.data)
+            if action == "set":
+                if not value:
+                    raise ValueError("设置值无效。")
+                await self.service.apply_setting_panel_selection(
+                    chat_key, token, version, value
+                )
+                await self.edit_or_resend_setting_panel(bot, event, chat_key)
+                await bot.answer_callback_query(event.id, text="已更新。")
+                return
+            if action == "close":
+                self.service.close_setting_panel(chat_key, token, version)
+                message_id = self.callback_message_id(event)
+                if message_id is not None:
+                    await self.edit_message(
+                        bot,
+                        chat_id=chat_id,
+                        message_id=message_id,
+                        text="设置面板已关闭。",
+                        reply_markup=None,
+                    )
+                await bot.answer_callback_query(event.id, text="已关闭。")
+                return
+            self.service.navigate_setting_panel(chat_key, token, version, action)
+            await self.edit_or_resend_setting_panel(bot, event, chat_key)
+            await bot.answer_callback_query(event.id)
+        except ValueError as exc:
+            text = str(exc) or SETTING_STALE_MESSAGE
+            await bot.answer_callback_query(
+                event.id,
+                text=text,
+                show_alert=text == SETTING_STALE_MESSAGE,
             )
         except RuntimeError as exc:
             await bot.answer_callback_query(

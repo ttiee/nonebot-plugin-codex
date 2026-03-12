@@ -34,6 +34,9 @@ BROWSER_STALE_MESSAGE = "目录面板已失效，请重新执行 /cd"
 HISTORY_CALLBACK_PREFIX = "chs"
 HISTORY_PAGE_SIZE = 6
 HISTORY_STALE_MESSAGE = "历史会话面板已失效，请重新执行 /sessions"
+SETTING_CALLBACK_PREFIX = "csp"
+SETTING_STALE_MESSAGE = "设置面板已失效，请重新执行对应命令"
+SUPPORTED_SETTING_PANELS = {"mode", "model", "effort", "permission"}
 
 
 @dataclass(slots=True)
@@ -165,6 +168,15 @@ class DirectoryBrowserState:
     message_id: int | None = None
 
 
+@dataclass(slots=True)
+class SettingPanelState:
+    chat_key: str
+    kind: str
+    token: str
+    version: int
+    message_id: int | None = None
+
+
 def build_chat_key(chat_type: str, chat_id: int) -> str:
     if chat_type == "private":
         return f"private_{chat_id}"
@@ -274,6 +286,30 @@ def decode_history_callback(payload: str) -> tuple[str, int, str, int | None]:
         except ValueError as exc:
             raise ValueError("无效的历史会话回调。") from exc
     return token, version, action, index
+
+
+def encode_setting_callback(
+    token: str,
+    version: int,
+    action: str,
+    value: str | None = None,
+) -> str:
+    suffix = "" if value is None else f":{value}"
+    return f"{SETTING_CALLBACK_PREFIX}:{token}:{version}:{action}{suffix}"
+
+
+def decode_setting_callback(payload: str) -> tuple[str, int, str, str | None]:
+    parts = payload.split(":")
+    if len(parts) not in {4, 5} or parts[0] != SETTING_CALLBACK_PREFIX:
+        raise ValueError("无效的设置回调。")
+    token = parts[1]
+    try:
+        version = int(parts[2])
+    except ValueError as exc:
+        raise ValueError("无效的设置回调。") from exc
+    action = parts[3]
+    value = parts[4] if len(parts) == 5 else None
+    return token, version, action, value
 
 
 def parse_event_line(line: str) -> dict[str, Any] | None:
@@ -446,8 +482,16 @@ class CodexBridgeService:
         self.preference_overrides = self._load_preferences()
         self.directory_browsers: dict[str, DirectoryBrowserState] = {}
         self.history_browsers: dict[str, HistoryBrowserState] = {}
+        self.setting_panels: dict[str, SettingPanelState] = {}
         self._native_history_entries: list[HistoricalSessionSummary] = []
         self._native_history_loaded = False
+
+    def _configured_workdir(self) -> str:
+        configured = Path(self.settings.workdir).expanduser()
+        try:
+            return str(configured.resolve())
+        except OSError:
+            return str(configured)
 
     def _spawn_native_client(self) -> Any:
         if self.native_client is None:
@@ -1342,6 +1386,205 @@ class CodexBridgeService:
         notice_lines.append("下一条普通消息会继续该会话。")
         return "\n".join(notice_lines)
 
+    def _replace_setting_panel_state(
+        self,
+        chat_key: str,
+        kind: str,
+        *,
+        previous: SettingPanelState | None = None,
+    ) -> SettingPanelState:
+        if kind not in SUPPORTED_SETTING_PANELS:
+            raise ValueError("未知设置面板。")
+        state = SettingPanelState(
+            chat_key=chat_key,
+            kind=kind,
+            token=previous.token if previous else self._make_browser_token(),
+            version=(previous.version + 1) if previous else 1,
+            message_id=previous.message_id if previous else None,
+        )
+        self.setting_panels[chat_key] = state
+        return state
+
+    def open_setting_panel(self, chat_key: str, kind: str) -> SettingPanelState:
+        self._ensure_not_running(chat_key)
+        self.get_preferences(chat_key)
+        return self._replace_setting_panel_state(chat_key, kind)
+
+    def get_setting_panel(
+        self,
+        chat_key: str,
+        token: str | None = None,
+        version: int | None = None,
+    ) -> SettingPanelState:
+        state = self.setting_panels.get(chat_key)
+        if state is None:
+            raise ValueError(SETTING_STALE_MESSAGE)
+        if token is not None and state.token != token:
+            raise ValueError(SETTING_STALE_MESSAGE)
+        if version is not None and state.version != version:
+            raise ValueError(SETTING_STALE_MESSAGE)
+        return state
+
+    def remember_setting_panel_message(
+        self,
+        chat_key: str,
+        token: str,
+        message_id: int | None,
+    ) -> None:
+        if message_id is None:
+            return
+        panel = self.get_setting_panel(chat_key, token=token)
+        panel.message_id = message_id
+
+    def close_setting_panel(self, chat_key: str, token: str, version: int) -> None:
+        self.get_setting_panel(chat_key, token=token, version=version)
+        self.setting_panels.pop(chat_key, None)
+
+    def navigate_setting_panel(
+        self,
+        chat_key: str,
+        token: str,
+        version: int,
+        action: str,
+    ) -> SettingPanelState:
+        panel = self.get_setting_panel(chat_key, token=token, version=version)
+        if action != "refresh":
+            raise ValueError("未知设置操作。")
+        return self._replace_setting_panel_state(chat_key, panel.kind, previous=panel)
+
+    def render_setting_panel(self, chat_key: str) -> tuple[str, InlineKeyboardMarkup]:
+        panel = self.get_setting_panel(chat_key)
+        preferences = self.get_preferences(chat_key)
+        lines: list[str]
+        options: list[tuple[str, str]]
+
+        if panel.kind == "mode":
+            session = self.sessions.get(chat_key)
+            active_mode = session.active_mode if session else preferences.default_mode
+            lines = [
+                "模式设置",
+                f"当前默认模式：{preferences.default_mode}",
+                f"当前活跃模式：{active_mode}",
+            ]
+            options = [
+                (
+                    "resume",
+                    "✓ resume" if preferences.default_mode == "resume" else "resume",
+                ),
+                ("exec", "✓ exec" if preferences.default_mode == "exec" else "exec"),
+            ]
+        elif panel.kind == "model":
+            lines = [
+                "模型设置",
+                f"当前设置：{format_preferences_summary(preferences)}",
+            ]
+            options = [
+                (
+                    model.slug,
+                    f"{'✓ ' if model.slug == preferences.model else ''}{model.slug}",
+                )
+                for model in self.list_models()
+            ]
+        elif panel.kind == "effort":
+            supported = self.get_supported_efforts(preferences.model)
+            lines = [
+                "推理强度设置",
+                f"当前模型：{preferences.model}",
+                f"当前推理强度：{preferences.reasoning_effort}",
+                f"支持：{' / '.join(supported)}",
+            ]
+            options = [
+                (
+                    effort,
+                    (
+                        f"✓ {effort}"
+                        if effort == preferences.reasoning_effort
+                        else effort
+                    ),
+                )
+                for effort in supported
+            ]
+        elif panel.kind == "permission":
+            lines = [
+                "权限模式设置",
+                f"当前权限模式：{preferences.permission_mode}",
+                "safe = workspace-write",
+                "danger = 绕过审批与沙箱",
+            ]
+            options = [
+                (
+                    "safe",
+                    "✓ safe" if preferences.permission_mode == "safe" else "safe",
+                ),
+                (
+                    "danger",
+                    (
+                        "✓ danger"
+                        if preferences.permission_mode == "danger"
+                        else "danger"
+                    ),
+                ),
+            ]
+        else:
+            raise ValueError("未知设置面板。")
+
+        keyboard = [
+            [
+                InlineKeyboardButton(
+                    text=label,
+                    callback_data=encode_setting_callback(
+                        panel.token,
+                        panel.version,
+                        "set",
+                        value,
+                    ),
+                )
+            ]
+            for value, label in options
+        ]
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    text="刷新",
+                    callback_data=encode_setting_callback(
+                        panel.token,
+                        panel.version,
+                        "refresh",
+                    ),
+                ),
+                InlineKeyboardButton(
+                    text="关闭",
+                    callback_data=encode_setting_callback(
+                        panel.token,
+                        panel.version,
+                        "close",
+                    ),
+                ),
+            ]
+        )
+        return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+    async def apply_setting_panel_selection(
+        self,
+        chat_key: str,
+        token: str,
+        version: int,
+        value: str,
+    ) -> str:
+        panel = self.get_setting_panel(chat_key, token=token, version=version)
+        if panel.kind == "mode":
+            notice = await self.update_default_mode(chat_key, value)
+        elif panel.kind == "model":
+            notice = await self.update_model(chat_key, value)
+        elif panel.kind == "effort":
+            notice = await self.update_reasoning_effort(chat_key, value)
+        elif panel.kind == "permission":
+            notice = await self.update_permission_mode(chat_key, value)
+        else:
+            raise ValueError("未知设置面板。")
+        self._replace_setting_panel_state(chat_key, panel.kind, previous=panel)
+        return notice
+
     def load_models(self) -> dict[str, ModelInfo]:
         try:
             payload = json.loads(
@@ -1419,7 +1662,9 @@ class CodexBridgeService:
                 reasoning_effort=reasoning_effort,
                 permission_mode=permission_mode,
                 workdir=(
-                    workdir if isinstance(workdir, str) and workdir else str(Path.home())
+                    workdir
+                    if isinstance(workdir, str) and workdir
+                    else self._configured_workdir()
                 ),
                 default_mode=(
                     default_mode
@@ -1490,7 +1735,7 @@ class CodexBridgeService:
             model=model.slug,
             reasoning_effort=effort,
             permission_mode="safe",
-            workdir=str(Path.home()),
+            workdir=self._configured_workdir(),
             default_mode="resume",
         )
 
@@ -1717,7 +1962,7 @@ class CodexBridgeService:
         if action == "home":
             return self._replace_browser_state(
                 chat_key,
-                str(Path.home()),
+                self._configured_workdir(),
                 page=0,
                 previous=browser,
             )

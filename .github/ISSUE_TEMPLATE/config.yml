@@ -1,0 +1,6 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Repository Plans
+    url: https://github.com/ttiee/nonebot-plugin-codex/tree/main/docs/plans
+    about: Review existing design and implementation planning documents before opening broad-scoped requests.
+

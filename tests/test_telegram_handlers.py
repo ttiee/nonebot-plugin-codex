@@ -78,14 +78,20 @@ class FakeBot:
 class FakeService:
     def __init__(self) -> None:
         self.session = ChatSession()
-        self.settings = SimpleNamespace(chunk_size=3500)
+        self.settings = SimpleNamespace(chunk_size=3500, workdir="/tmp/configured-home")
         self.browser_text = "目录浏览"
         self.history_text = "Codex 历史会话"
+        self.setting_text = "模式设置"
         self.default_mode = "resume"
         self.execute_calls: list[tuple[str, str | None]] = []
         self.browser_token = "token"
         self.browser_version = 1
         self.browser_applied = False
+        self.setting_token = "setting"
+        self.setting_version = 1
+        self.setting_kind = "mode"
+        self.setting_updates: list[str] = []
+        self.updated_workdirs: list[str] = []
 
     def get_session(self, chat_key: str) -> ChatSession:
         return self.session
@@ -134,6 +140,7 @@ class FakeService:
         return None
 
     async def update_workdir(self, chat_key: str, target: str) -> str:
+        self.updated_workdirs.append(target)
         return f"当前工作目录：{target}"
 
     def get_browser(self, chat_key: str) -> SimpleNamespace:
@@ -173,6 +180,58 @@ class FakeService:
         self, chat_key: str, token: str, message_id: int | None
     ) -> None:
         return None
+
+    def open_setting_panel(self, chat_key: str, kind: str) -> SimpleNamespace:
+        self.setting_kind = kind
+        return SimpleNamespace(token=self.setting_token)
+
+    def render_setting_panel(self, chat_key: str) -> tuple[str, None]:
+        texts = {
+            "mode": "模式设置",
+            "model": "模型设置",
+            "effort": "推理强度设置",
+            "permission": "权限模式设置",
+        }
+        return texts[self.setting_kind], None
+
+    def remember_setting_panel_message(
+        self, chat_key: str, token: str, message_id: int | None
+    ) -> None:
+        return None
+
+    def get_setting_panel(self, chat_key: str) -> SimpleNamespace:
+        return SimpleNamespace(
+            token=self.setting_token,
+            version=self.setting_version,
+            kind=self.setting_kind,
+            message_id=1,
+        )
+
+    def navigate_setting_panel(
+        self,
+        chat_key: str,
+        token: str,
+        version: int,
+        action: str,
+    ) -> None:
+        return None
+
+    async def apply_setting_panel_selection(
+        self,
+        chat_key: str,
+        token: str,
+        version: int,
+        value: str,
+    ) -> str:
+        self.setting_updates.append(value)
+        return f"当前设置：{value}"
+
+    def close_setting_panel(self, chat_key: str, token: str, version: int) -> None:
+        return None
+
+    async def update_default_mode(self, chat_key: str, mode: str) -> str:
+        self.setting_updates.append(mode)
+        return f"当前默认模式：{mode}"
 
 
 @pytest.mark.asyncio
@@ -244,3 +303,63 @@ async def test_handle_browser_callback_apply_updates_directory() -> None:
 
     assert service.browser_applied is True
     assert bot.answered[0]["text"] == "工作目录已更新。"
+
+
+@pytest.mark.asyncio
+async def test_handle_home_uses_configured_workdir() -> None:
+    service = FakeService()
+    handlers = TelegramHandlers(service)
+    bot = FakeBot()
+
+    await handlers.handle_home(bot, FakeEvent(""))
+
+    assert service.updated_workdirs == [service.settings.workdir]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("handler_name", "kind", "expected_text"),
+    [
+        ("handle_mode", "mode", "模式设置"),
+        ("handle_model", "model", "模型设置"),
+        ("handle_effort", "effort", "推理强度设置"),
+        ("handle_permission", "permission", "权限模式设置"),
+    ],
+)
+async def test_selection_commands_without_argument_open_setting_panels(
+    handler_name: str,
+    kind: str,
+    expected_text: str,
+) -> None:
+    service = FakeService()
+    handlers = TelegramHandlers(service)
+    bot = FakeBot()
+
+    await getattr(handlers, handler_name)(bot, FakeEvent(""), FakeMessage(""))
+
+    assert service.setting_kind == kind
+    assert bot.sent[0]["text"] == expected_text
+
+
+@pytest.mark.asyncio
+async def test_handle_mode_with_argument_still_updates_default_mode() -> None:
+    service = FakeService()
+    handlers = TelegramHandlers(service)
+    bot = FakeBot()
+
+    await handlers.handle_mode(bot, FakeEvent(""), FakeMessage("exec"))
+
+    assert service.setting_updates == ["exec"]
+
+
+@pytest.mark.asyncio
+async def test_handle_setting_callback_updates_setting() -> None:
+    service = FakeService()
+    handlers = TelegramHandlers(service)
+    bot = FakeBot()
+    event = FakeCallbackEvent("csp:setting:1:set:danger")
+
+    await handlers.handle_setting_callback(bot, event)
+
+    assert service.setting_updates == ["danger"]
+    assert bot.answered[0]["text"] == "已更新。"

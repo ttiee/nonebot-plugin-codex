@@ -82,6 +82,12 @@ if _runtime_ready:
         block=True,
         rule=handlers.is_history_callback,
     )
+    setting_callback = on_type(
+        CallbackQueryEvent,
+        priority=10,
+        block=True,
+        rule=handlers.is_setting_callback,
+    )
 
     @codex_cmd.handle()
     async def _handle_codex(
@@ -158,6 +164,10 @@ if _runtime_ready:
     @history_callback.handle()
     async def _handle_history_callback(bot: Bot, event: CallbackQueryEvent) -> None:
         await handlers.handle_history_callback(bot, event)
+
+    @setting_callback.handle()
+    async def _handle_setting_callback(bot: Bot, event: CallbackQueryEvent) -> None:
+        await handlers.handle_setting_callback(bot, event)
 
     @follow_up.handle()
     async def _handle_follow_up(bot: Bot, event: MessageEvent) -> None:

@@ -69,6 +69,38 @@ def test_build_exec_argv_for_safe_and_resume_mode() -> None:
     assert argv[-2:] == ["thread-1", "hello"]
 
 
+def test_default_preferences_use_configured_workdir(
+    tmp_path: Path, model_cache_file: Path
+) -> None:
+    service = make_service(tmp_path, model_cache_file)
+
+    preferences = service.get_preferences("private_1")
+
+    assert preferences.workdir == str(tmp_path.resolve())
+
+
+def test_directory_browser_home_uses_configured_workdir(
+    tmp_path: Path, model_cache_file: Path
+) -> None:
+    service = make_service(tmp_path, model_cache_file)
+    outside_dir = tmp_path.parent
+
+    browser = service._replace_browser_state(  # noqa: SLF001
+        "private_1",
+        str(outside_dir),
+        page=0,
+    )
+
+    browser = service.navigate_directory_browser(
+        "private_1",
+        browser.token,
+        browser.version,
+        "home",
+    )
+
+    assert browser.current_path == str(tmp_path.resolve())
+
+
 @pytest.mark.asyncio
 async def test_update_default_mode_persists_preference_and_switches_active_mode(
     tmp_path: Path, model_cache_file: Path
@@ -162,3 +194,46 @@ async def test_apply_history_session_uses_existing_cwd_when_original_missing(
 
     assert "原工作目录不存在，已保留当前工作目录。" in notice
     assert f"当前工作目录：{current_dir.resolve()}" in notice
+
+
+@pytest.mark.parametrize(
+    ("kind", "expected_heading"),
+    [
+        ("mode", "模式设置"),
+        ("model", "模型设置"),
+        ("effort", "推理强度设置"),
+        ("permission", "权限模式设置"),
+    ],
+)
+def test_render_setting_panels_show_expected_headings(
+    tmp_path: Path,
+    model_cache_file: Path,
+    kind: str,
+    expected_heading: str,
+) -> None:
+    service = make_service(tmp_path, model_cache_file)
+    service.activate_chat("private_1")
+
+    service.open_setting_panel("private_1", kind)
+    text, markup = service.render_setting_panel("private_1")
+
+    assert expected_heading in text
+    assert markup.inline_keyboard
+
+
+@pytest.mark.asyncio
+async def test_apply_permission_setting_panel_updates_preference(
+    tmp_path: Path, model_cache_file: Path
+) -> None:
+    service = make_service(tmp_path, model_cache_file)
+    panel = service.open_setting_panel("private_1", "permission")
+
+    notice = await service.apply_setting_panel_selection(
+        "private_1",
+        panel.token,
+        panel.version,
+        "danger",
+    )
+
+    assert "danger" in notice
+    assert service.get_preferences("private_1").permission_mode == "danger"
