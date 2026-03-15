@@ -208,7 +208,9 @@ codex_stream_read_limit = 1048576
 仓库已包含基础发布流程：
 
 - `test.yml`：安装依赖并运行测试
-- `release.yml`：在推送 `v*` 标签时执行 `pdm publish` 并上传构建产物
+- `release.yml`：在推送 `v*` 标签时执行 `pdm publish`、生成两个版本间的结构化发布说明，并上传构建产物
+
+Release 说明会按 tag 区间内的 Conventional Commits 自动分组，例如 `feat`、`fix`、`docs`、`chore` 等，并附上 compare 链接，避免每次手工整理改动列表。
 
 如果你要启用 PyPI Trusted Publishing，请在 PyPI 项目设置中添加以下信息：
 
