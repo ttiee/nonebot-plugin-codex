@@ -466,18 +466,6 @@ class TelegramHandlers:
             getattr(message, "message_id", None),
         )
 
-    async def send_workspace_panel_to_chat(
-        self, bot: Bot, chat_id: int, chat_key: str
-    ) -> None:
-        panel = self.service.open_workspace_panel(chat_key)
-        text, markup = self.service.render_workspace_panel(chat_key)
-        message = await self.send_chat_message(bot, chat_id, text, reply_markup=markup)
-        self.service.remember_workspace_panel_message(
-            chat_key,
-            panel.token,
-            getattr(message, "message_id", None),
-        )
-
     async def edit_or_resend_browser(
         self,
         bot: Bot,
