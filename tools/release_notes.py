@@ -124,7 +124,9 @@ def render_release_notes(
     repo: str,
     items: Sequence[ReleaseNoteItem],
 ) -> str:
-    lines = [f"# {current_tag}", ""]
+    # lines = [f"# {current_tag}", ""]
+    # 去掉重复的版本标题
+    lines = []
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     lines.append(f"Released on {timestamp}.")
     compare_url = build_compare_url(repo, previous_tag, current_tag)

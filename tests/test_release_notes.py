@@ -20,7 +20,8 @@ def test_render_release_notes_groups_conventional_commits() -> None:
         ],
     )
 
-    assert "# v0.1.2" in notes
+    assert notes.startswith("Released on ")
+    assert "# v0.1.2" not in notes
     assert (
         "Compare: https://github.com/ttiee/nonebot-plugin-codex/compare/"
         "v0.1.1...v0.1.2"
