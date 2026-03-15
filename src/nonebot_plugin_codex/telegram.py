@@ -30,6 +30,8 @@ from .telegram_rendering import render_telegram_html
 
 RETRY_AFTER_PATTERN = re.compile(r"retry after (\d+(?:\.\d+)?)", re.IGNORECASE)
 PARSE_ENTITIES_ERROR = "can't parse entities"
+# Telegram 在编辑后的文本和按钮都没变化时，会返回这个错误。
+MESSAGE_NOT_MODIFIED_ERROR = "message is not modified"
 
 
 class TelegramHandlers:
@@ -71,6 +73,11 @@ class TelegramHandlers:
 
     def is_parse_entities_error(self, exc: Exception) -> bool:
         return isinstance(exc, ActionFailed) and PARSE_ENTITIES_ERROR in str(exc).lower()
+
+    def is_message_not_modified_error(self, exc: Exception) -> bool:
+        return isinstance(exc, ActionFailed) and MESSAGE_NOT_MODIFIED_ERROR in str(
+            exc
+        ).lower()
 
     async def send_event_message(
         self, bot: Bot, event: MessageEvent, text: str, **kwargs: object
@@ -434,7 +441,13 @@ class TelegramHandlers:
             self.service.remember_history_browser_message(
                 chat_key, browser.token, message_id
             )
-        except Exception:
+        except Exception as exc:
+            if self.is_message_not_modified_error(exc):
+                # 原消息内容未变化时不需要补发，否则会把同一个历史面板再发一遍。
+                self.service.remember_history_browser_message(
+                    chat_key, browser.token, message_id
+                )
+                return
             message = await self.send_chat_message(
                 bot, chat_id, text, reply_markup=markup
             )

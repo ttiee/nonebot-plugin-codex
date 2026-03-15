@@ -14,6 +14,7 @@ from nonebot_plugin_codex.service import (
     CodexBridgeService,
     CodexBridgeSettings,
     encode_browser_callback,
+    encode_history_callback,
     encode_setting_callback,
 )
 
@@ -121,6 +122,21 @@ class HtmlFailingBot(FakeBot):
             )
 
 
+class MessageNotModifiedBot(FakeBot):
+    async def edit_message_text(
+        self, *, chat_id: int, message_id: int, text: str, **kwargs: Any
+    ) -> None:
+        self.edited.append(
+            {
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "text": text,
+                **kwargs,
+            }
+        )
+        raise ActionFailed("Bad Request: message is not modified")
+
+
 class FakeService:
     def __init__(self) -> None:
         self.session = ChatSession()
@@ -133,6 +149,9 @@ class FakeService:
         self.browser_token = "token"
         self.browser_version = 1
         self.browser_applied = False
+        self.history_token = "history"
+        self.history_version = 1
+        self.history_applied = False
         self.setting_token = "setting"
         self.setting_version = 1
         self.setting_kind = "mode"
@@ -228,6 +247,32 @@ class FakeService:
     def remember_history_browser_message(
         self, chat_key: str, token: str, message_id: int | None
     ) -> None:
+        return None
+
+    def get_history_browser(self, chat_key: str) -> SimpleNamespace:
+        return SimpleNamespace(
+            token=self.history_token,
+            version=self.history_version,
+            message_id=1,
+        )
+
+    async def apply_history_session(
+        self, chat_key: str, token: str, version: int
+    ) -> str:
+        self.history_applied = True
+        return "已切换到历史会话（native）：Test Session"
+
+    def navigate_history_browser(
+        self,
+        chat_key: str,
+        token: str,
+        version: int,
+        action: str,
+        index: int | None = None,
+    ) -> None:
+        return None
+
+    def close_history_browser(self, chat_key: str, token: str, version: int) -> None:
         return None
 
     def open_setting_panel(self, chat_key: str, kind: str) -> SimpleNamespace:
@@ -460,6 +505,25 @@ async def test_handle_browser_callback_apply_updates_directory() -> None:
 
     assert service.browser_applied is True
     assert bot.answered[0]["text"] == "工作目录已更新。"
+
+
+@pytest.mark.asyncio
+async def test_handle_history_callback_apply_keeps_notice_without_resending_menu(
+) -> None:
+    service = FakeService()
+    handlers = TelegramHandlers(service)
+    bot = MessageNotModifiedBot()
+    event = FakeCallbackEvent(
+        encode_history_callback(service.history_token, service.history_version, "apply")
+    )
+
+    await handlers.handle_history_callback(bot, event)
+
+    assert service.history_applied is True
+    assert bot.answered[0]["text"] == "已切换到历史会话。"
+    assert [payload["text"] for payload in bot.sent] == [
+        "已切换到历史会话（native）：Test Session"
+    ]
 
 
 @pytest.mark.asyncio
