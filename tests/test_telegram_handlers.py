@@ -16,6 +16,7 @@ from nonebot_plugin_codex.service import (
     encode_browser_callback,
     encode_history_callback,
     encode_setting_callback,
+    encode_workspace_callback,
 )
 
 
@@ -146,6 +147,8 @@ class FakeService:
         self.setting_text = "模式设置"
         self.onboarding_text = "开始使用 Codex"
         self.onboarding_markup = SimpleNamespace(name="onboarding")
+        self.workspace_text = "当前工作台"
+        self.workspace_markup = SimpleNamespace(name="workspace")
         self.default_mode = "resume"
         self.execute_calls: list[tuple[str, str | None]] = []
         self.browser_token = "token"
@@ -162,6 +165,9 @@ class FakeService:
         self.onboarding_token = "onboarding"
         self.onboarding_version = 1
         self.onboarding_closed = False
+        self.workspace_token = "workspace"
+        self.workspace_version = 1
+        self.workspace_closed = False
 
     def get_session(self, chat_key: str) -> ChatSession:
         return self.session
@@ -362,6 +368,49 @@ class FakeService:
     def close_onboarding_panel(self, chat_key: str, token: str, version: int) -> None:
         self.onboarding_closed = True
 
+    def open_workspace_panel(self, chat_key: str) -> SimpleNamespace:
+        return SimpleNamespace(token=self.workspace_token)
+
+    def render_workspace_panel(self, chat_key: str) -> tuple[str, Any]:
+        return self.workspace_text, self.workspace_markup
+
+    def remember_workspace_panel_message(
+        self, chat_key: str, token: str, message_id: int | None
+    ) -> None:
+        return None
+
+    def get_workspace_panel(
+        self,
+        chat_key: str,
+        token: str | None = None,
+        version: int | None = None,
+    ) -> SimpleNamespace:
+        if token is not None and token != self.workspace_token:
+            raise ValueError("工作台面板已失效，请重新执行 /panel")
+        if version is not None and version != self.workspace_version:
+            raise ValueError("工作台面板已失效，请重新执行 /panel")
+        return SimpleNamespace(
+            token=self.workspace_token,
+            version=self.workspace_version,
+            message_id=1,
+        )
+
+    def close_workspace_panel(self, chat_key: str, token: str, version: int) -> None:
+        self.workspace_closed = True
+
+    def navigate_workspace_panel(
+        self,
+        chat_key: str,
+        token: str,
+        version: int,
+        action: str,
+    ) -> SimpleNamespace:
+        return SimpleNamespace(
+            token=self.workspace_token,
+            version=self.workspace_version,
+            message_id=1,
+        )
+
 
 def make_real_service(
     tmp_path: Path,
@@ -525,6 +574,143 @@ async def test_handle_sessions_opens_history_browser() -> None:
     await handlers.handle_sessions(bot, FakeEvent(""))
 
     assert bot.sent[0]["text"] == "Codex 历史会话"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("handler_name", ["handle_panel", "handle_status"])
+async def test_panel_and_status_open_workspace_panel(handler_name: str) -> None:
+    service = FakeService()
+    handlers = TelegramHandlers(service)
+    bot = FakeBot()
+
+    await getattr(handlers, handler_name)(bot, FakeEvent(""))
+
+    assert bot.sent[0]["text"] == "当前工作台"
+    assert bot.sent[0]["reply_markup"] is service.workspace_markup
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("action", "expected_text"),
+    [
+        ("mode", "模式设置"),
+        ("model", "模型设置"),
+        ("effort", "推理强度设置"),
+        ("permission", "权限模式设置"),
+        ("browse", "目录浏览"),
+        ("history", "Codex 历史会话"),
+    ],
+)
+async def test_handle_workspace_callback_opens_existing_panels(
+    action: str,
+    expected_text: str,
+) -> None:
+    service = FakeService()
+    handlers = TelegramHandlers(service)
+    bot = FakeBot()
+    event = FakeCallbackEvent(
+        encode_workspace_callback(
+            service.workspace_token,
+            service.workspace_version,
+            action,
+        )
+    )
+
+    await handlers.handle_workspace_callback(bot, event)
+
+    assert bot.sent[0]["text"] == expected_text
+
+
+@pytest.mark.asyncio
+async def test_handle_workspace_callback_new_resets_chat() -> None:
+    service = FakeService()
+    service.session.thread_id = "thread-1"
+    handlers = TelegramHandlers(service)
+    bot = FakeBot()
+    event = FakeCallbackEvent(
+        encode_workspace_callback(
+            service.workspace_token,
+            service.workspace_version,
+            "new",
+        )
+    )
+
+    await handlers.handle_workspace_callback(bot, event)
+
+    assert "已清空当前 Codex 会话" in bot.sent[0]["text"]
+    assert bot.answered[0]["text"] == "已新开会话。"
+
+
+@pytest.mark.asyncio
+async def test_handle_workspace_callback_stop_disconnects_chat() -> None:
+    service = FakeService()
+    service.session.active = True
+    service.session.thread_id = "thread-1"
+    handlers = TelegramHandlers(service)
+    bot = FakeBot()
+    event = FakeCallbackEvent(
+        encode_workspace_callback(
+            service.workspace_token,
+            service.workspace_version,
+            "stop",
+        )
+    )
+
+    await handlers.handle_workspace_callback(bot, event)
+
+    assert bot.sent[0]["text"] == "已断开当前聊天窗口的 Codex 会话。"
+    assert bot.answered[0]["text"] == "已停止。"
+
+
+@pytest.mark.asyncio
+async def test_handle_workspace_callback_refresh_rerenders_panel() -> None:
+    service = FakeService()
+    handlers = TelegramHandlers(service)
+    bot = FakeBot()
+    event = FakeCallbackEvent(
+        encode_workspace_callback(
+            service.workspace_token,
+            service.workspace_version,
+            "refresh",
+        )
+    )
+
+    await handlers.handle_workspace_callback(bot, event)
+
+    assert bot.edited[0]["text"] == "当前工作台"
+
+
+@pytest.mark.asyncio
+async def test_handle_workspace_callback_close_closes_panel() -> None:
+    service = FakeService()
+    handlers = TelegramHandlers(service)
+    bot = FakeBot()
+    event = FakeCallbackEvent(
+        encode_workspace_callback(
+            service.workspace_token,
+            service.workspace_version,
+            "close",
+        )
+    )
+
+    await handlers.handle_workspace_callback(bot, event)
+
+    assert service.workspace_closed is True
+    assert bot.edited[0]["text"] == "工作台已关闭。"
+    assert bot.answered[0]["text"] == "已关闭。"
+
+
+@pytest.mark.asyncio
+async def test_handle_workspace_callback_rejects_stale_payload() -> None:
+    handlers = TelegramHandlers(FakeService())
+    bot = FakeBot()
+
+    await handlers.handle_workspace_callback(
+        bot, FakeCallbackEvent("cwp:stale:1:browse")
+    )
+
+    assert bot.answered[0]["text"] == "工作台面板已失效，请重新执行 /panel"
+    assert bot.answered[0]["show_alert"] is True
 
 
 @pytest.mark.asyncio

@@ -109,12 +109,15 @@ codex_workdir = "/home/yourname"
 
 ```text
 /codex
+/panel
 /cd /home/yourname/projects/demo
 /mode resume
 然后继续直接发送普通文本消息续聊
 ```
 
 `/codex` 不带参数时会打开一个 Telegram 内的使用引导面板，方便你直接查看当前模式、工作目录、设置摘要，并进入目录浏览、设置面板或历史会话。
+
+`/panel` 和 `/status` 会打开统一的“当前工作台”面板，把模式、模型、推理强度、权限、工作目录、当前会话状态和最近历史摘要放在同一屏里，并提供进入设置、目录、历史、新会话和停止会话的快捷操作。
 
 你也可以直接把首条任务跟在 `/codex` 后面：
 
@@ -134,6 +137,7 @@ codex_workdir = "/home/yourname"
 ```text
 /help
 /start
+/panel
 ```
 
 ## 配置说明
@@ -183,6 +187,8 @@ codex_stream_read_limit = 1048576
 | `/codex [prompt]` | 打开引导面板，或直接附带首条任务连接 Codex |
 | `/help` | 打开使用引导面板 |
 | `/start` | 打开使用引导面板 |
+| `/panel` | 打开统一工作台面板 |
+| `/status` | 打开统一工作台面板 |
 | `/mode [resume\|exec]` | 查看或切换默认模式 |
 | `/exec <prompt>` | 以一次性 `exec` 模式执行任务 |
 | `/new` | 新建当前聊天会话 |
@@ -216,6 +222,7 @@ codex_stream_read_limit = 1048576
 
 ## 目录与历史会话
 
+- `/panel` 或 `/status` 会打开统一工作台，一屏查看当前设置、工作目录、会话状态和最近历史，并跳转到常用控制面板。
 - `/cd` 可打开目录浏览器，逐级进入目录、切换 Home、显示隐藏目录，并把当前浏览目录设置为工作目录。
 - `/sessions` 会列出 native 与 exec 历史会话，便于恢复此前任务。
 - 历史会话恢复时会尝试切回原始工作目录；如果原目录不存在，会保留当前目录并给出提示。

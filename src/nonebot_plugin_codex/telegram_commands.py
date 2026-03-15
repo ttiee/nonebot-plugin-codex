@@ -29,6 +29,16 @@ TELEGRAM_COMMAND_SPECS: tuple[TelegramCommandSpec, ...] = (
         usage="/start",
     ),
     TelegramCommandSpec(
+        name="panel",
+        description="打开当前工作台",
+        usage="/panel",
+    ),
+    TelegramCommandSpec(
+        name="status",
+        description="打开当前工作台",
+        usage="/status",
+    ),
+    TelegramCommandSpec(
         name="mode",
         description="查看或切换默认模式",
         usage="/mode",

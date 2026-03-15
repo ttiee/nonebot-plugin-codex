@@ -19,10 +19,13 @@ from .service import (
     ONBOARDING_CALLBACK_PREFIX,
     SETTING_STALE_MESSAGE,
     SETTING_CALLBACK_PREFIX,
+    WORKSPACE_STALE_MESSAGE,
+    WORKSPACE_CALLBACK_PREFIX,
     CodexBridgeService,
     chunk_text,
     build_chat_key,
     decode_onboarding_callback,
+    decode_workspace_callback,
     format_result_text,
     decode_browser_callback,
     decode_history_callback,
@@ -354,6 +357,11 @@ class TelegramHandlers:
             f"{ONBOARDING_CALLBACK_PREFIX}:"
         )
 
+    async def is_workspace_callback(self, event: CallbackQueryEvent) -> bool:
+        return isinstance(event.data, str) and event.data.startswith(
+            f"{WORKSPACE_CALLBACK_PREFIX}:"
+        )
+
     def callback_message_id(self, event: CallbackQueryEvent) -> int | None:
         message = getattr(event, "message", None)
         return getattr(message, "message_id", None)
@@ -441,6 +449,30 @@ class TelegramHandlers:
         text, markup = self.service.render_onboarding_panel(chat_key)
         message = await self.send_event_message(bot, event, text, reply_markup=markup)
         self.service.remember_onboarding_panel_message(
+            chat_key,
+            panel.token,
+            getattr(message, "message_id", None),
+        )
+
+    async def send_workspace_panel(
+        self, bot: Bot, event: MessageEvent, chat_key: str
+    ) -> None:
+        panel = self.service.open_workspace_panel(chat_key)
+        text, markup = self.service.render_workspace_panel(chat_key)
+        message = await self.send_event_message(bot, event, text, reply_markup=markup)
+        self.service.remember_workspace_panel_message(
+            chat_key,
+            panel.token,
+            getattr(message, "message_id", None),
+        )
+
+    async def send_workspace_panel_to_chat(
+        self, bot: Bot, chat_id: int, chat_key: str
+    ) -> None:
+        panel = self.service.open_workspace_panel(chat_key)
+        text, markup = self.service.render_workspace_panel(chat_key)
+        message = await self.send_chat_message(bot, chat_id, text, reply_markup=markup)
+        self.service.remember_workspace_panel_message(
             chat_key,
             panel.token,
             getattr(message, "message_id", None),
@@ -547,6 +579,39 @@ class TelegramHandlers:
                 getattr(message, "message_id", None),
             )
 
+    async def edit_or_resend_workspace_panel(
+        self,
+        bot: Bot,
+        event: CallbackQueryEvent,
+        chat_key: str,
+    ) -> None:
+        panel = self.service.get_workspace_panel(chat_key)
+        text, markup = self.service.render_workspace_panel(chat_key)
+        message_id = self.callback_message_id(event) or panel.message_id
+        chat_id = self.event_chat(event).id
+        try:
+            if message_id is None:
+                raise ValueError("missing message id")
+            await self.edit_message(
+                bot,
+                chat_id=chat_id,
+                message_id=message_id,
+                text=text,
+                reply_markup=markup,
+            )
+            self.service.remember_workspace_panel_message(
+                chat_key, panel.token, message_id
+            )
+        except Exception:
+            message = await self.send_chat_message(
+                bot, chat_id, text, reply_markup=markup
+            )
+            self.service.remember_workspace_panel_message(
+                chat_key,
+                panel.token,
+                getattr(message, "message_id", None),
+            )
+
     async def handle_codex(self, bot: Bot, event: MessageEvent, args: Message) -> None:
         chat_key = self.chat_key(event)
         session = self.service.activate_chat(chat_key)
@@ -568,6 +633,12 @@ class TelegramHandlers:
 
     async def handle_start(self, bot: Bot, event: MessageEvent) -> None:
         await self.send_onboarding_panel(bot, event, self.chat_key(event))
+
+    async def handle_panel(self, bot: Bot, event: MessageEvent) -> None:
+        await self.send_workspace_panel(bot, event, self.chat_key(event))
+
+    async def handle_status(self, bot: Bot, event: MessageEvent) -> None:
+        await self.send_workspace_panel(bot, event, self.chat_key(event))
 
     async def handle_mode(self, bot: Bot, event: MessageEvent, args: Message) -> None:
         chat_key = self.chat_key(event)
@@ -884,6 +955,79 @@ class TelegramHandlers:
                 event.id,
                 text=text,
                 show_alert=text == ONBOARDING_STALE_MESSAGE,
+            )
+        except RuntimeError as exc:
+            await bot.answer_callback_query(
+                event.id, text=self.error_text(exc), show_alert=True
+            )
+
+    async def handle_workspace_callback(
+        self, bot: Bot, event: CallbackQueryEvent
+    ) -> None:
+        if not isinstance(event.data, str):
+            await bot.answer_callback_query(
+                event.id, text=WORKSPACE_STALE_MESSAGE, show_alert=True
+            )
+            return
+
+        try:
+            chat_key = self.chat_key(event)
+            chat_id = self.event_chat(event).id
+            token, version, action = decode_workspace_callback(event.data)
+            self.service.get_workspace_panel(chat_key, token=token, version=version)
+            if action in {"mode", "model", "effort", "permission"}:
+                await self.send_setting_panel_to_chat(bot, chat_id, chat_key, action)
+                await bot.answer_callback_query(event.id)
+                return
+            if action == "browse":
+                await self.send_browser_to_chat(bot, chat_id, chat_key)
+                await bot.answer_callback_query(event.id)
+                return
+            if action == "history":
+                await self.send_history_browser_to_chat(bot, chat_id, chat_key)
+                await bot.answer_callback_query(event.id)
+                return
+            if action == "new":
+                await self.service.reset_chat(chat_key, keep_active=True)
+                await self.send_chat_message(
+                    bot,
+                    chat_id,
+                    (
+                        "已清空当前 Codex 会话。下一条普通消息会按以下设置新开会话：\n"
+                        f"{self.current_summary(chat_key)}"
+                    ),
+                )
+                await bot.answer_callback_query(event.id, text="已新开会话。")
+                return
+            if action == "stop":
+                await self.service.reset_chat(chat_key, keep_active=False)
+                await self.send_chat_message(
+                    bot, chat_id, "已断开当前聊天窗口的 Codex 会话。"
+                )
+                await bot.answer_callback_query(event.id, text="已停止。")
+                return
+            if action == "close":
+                self.service.close_workspace_panel(chat_key, token, version)
+                message_id = self.callback_message_id(event)
+                if message_id is not None:
+                    await self.edit_message(
+                        bot,
+                        chat_id=chat_id,
+                        message_id=message_id,
+                        text="工作台已关闭。",
+                        reply_markup=None,
+                    )
+                await bot.answer_callback_query(event.id, text="已关闭。")
+                return
+            self.service.navigate_workspace_panel(chat_key, token, version, action)
+            await self.edit_or_resend_workspace_panel(bot, event, chat_key)
+            await bot.answer_callback_query(event.id)
+        except ValueError as exc:
+            text = str(exc) or WORKSPACE_STALE_MESSAGE
+            await bot.answer_callback_query(
+                event.id,
+                text=text,
+                show_alert=text == WORKSPACE_STALE_MESSAGE,
             )
         except RuntimeError as exc:
             await bot.answer_callback_query(

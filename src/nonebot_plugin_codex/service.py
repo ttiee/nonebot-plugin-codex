@@ -40,6 +40,8 @@ SETTING_STALE_MESSAGE = "设置面板已失效，请重新执行对应命令"
 SUPPORTED_SETTING_PANELS = {"mode", "model", "effort", "permission"}
 ONBOARDING_CALLBACK_PREFIX = "cop"
 ONBOARDING_STALE_MESSAGE = "引导面板已失效，请重新执行 /codex"
+WORKSPACE_CALLBACK_PREFIX = "cwp"
+WORKSPACE_STALE_MESSAGE = "工作台面板已失效，请重新执行 /panel"
 
 
 @dataclass(slots=True)
@@ -205,6 +207,14 @@ class OnboardingPanelState:
     message_id: int | None = None
 
 
+@dataclass(slots=True)
+class WorkspacePanelState:
+    chat_key: str
+    token: str
+    version: int
+    message_id: int | None = None
+
+
 def build_chat_key(chat_type: str, chat_id: int) -> str:
     if chat_type == "private":
         return f"private_{chat_id}"
@@ -353,6 +363,22 @@ def decode_onboarding_callback(payload: str) -> tuple[str, int, str]:
         version = int(parts[2])
     except ValueError as exc:
         raise ValueError("无效的引导回调。") from exc
+    return token, version, parts[3]
+
+
+def encode_workspace_callback(token: str, version: int, action: str) -> str:
+    return f"{WORKSPACE_CALLBACK_PREFIX}:{token}:{version}:{action}"
+
+
+def decode_workspace_callback(payload: str) -> tuple[str, int, str]:
+    parts = payload.split(":")
+    if len(parts) != 4 or parts[0] != WORKSPACE_CALLBACK_PREFIX:
+        raise ValueError("无效的工作台回调。")
+    token = parts[1]
+    try:
+        version = int(parts[2])
+    except ValueError as exc:
+        raise ValueError("无效的工作台回调。") from exc
     return token, version, parts[3]
 
 
@@ -528,6 +554,7 @@ class CodexBridgeService:
         self.history_browsers: dict[str, HistoryBrowserState] = {}
         self.setting_panels: dict[str, SettingPanelState] = {}
         self.onboarding_panels: dict[str, OnboardingPanelState] = {}
+        self.workspace_panels: dict[str, WorkspacePanelState] = {}
         self._native_history_entries: list[HistoricalSessionSummary] = []
         self._native_history_loaded = False
         self._history_log_cache: dict[str, HistoryLogCacheEntry] = {}
@@ -1714,6 +1741,194 @@ class CodexBridgeService:
     def close_onboarding_panel(self, chat_key: str, token: str, version: int) -> None:
         self.get_onboarding_panel(chat_key, token=token, version=version)
         self.onboarding_panels.pop(chat_key, None)
+
+    def _replace_workspace_panel_state(
+        self,
+        chat_key: str,
+        *,
+        previous: WorkspacePanelState | None = None,
+    ) -> WorkspacePanelState:
+        state = WorkspacePanelState(
+            chat_key=chat_key,
+            token=previous.token if previous else self._make_browser_token(),
+            version=(previous.version + 1) if previous else 1,
+            message_id=previous.message_id if previous else None,
+        )
+        self.workspace_panels[chat_key] = state
+        return state
+
+    def open_workspace_panel(self, chat_key: str) -> WorkspacePanelState:
+        self.get_preferences(chat_key)
+        return self._replace_workspace_panel_state(chat_key)
+
+    def get_workspace_panel(
+        self,
+        chat_key: str,
+        token: str | None = None,
+        version: int | None = None,
+    ) -> WorkspacePanelState:
+        state = self.workspace_panels.get(chat_key)
+        if state is None:
+            raise ValueError(WORKSPACE_STALE_MESSAGE)
+        if token is not None and state.token != token:
+            raise ValueError(WORKSPACE_STALE_MESSAGE)
+        if version is not None and state.version != version:
+            raise ValueError(WORKSPACE_STALE_MESSAGE)
+        return state
+
+    def remember_workspace_panel_message(
+        self,
+        chat_key: str,
+        token: str,
+        message_id: int | None,
+    ) -> None:
+        if message_id is None:
+            return
+        panel = self.get_workspace_panel(chat_key, token=token)
+        panel.message_id = message_id
+
+    def close_workspace_panel(self, chat_key: str, token: str, version: int) -> None:
+        self.get_workspace_panel(chat_key, token=token, version=version)
+        self.workspace_panels.pop(chat_key, None)
+
+    def _workspace_active_mode(self, chat_key: str, preferences: ChatPreferences) -> str:
+        session = self.sessions.get(chat_key)
+        if session is not None and session.active_mode in {"resume", "exec"}:
+            return session.active_mode
+        return preferences.default_mode
+
+    def _workspace_session_summary(self, chat_key: str) -> str:
+        session = self.sessions.get(chat_key)
+        if session is None:
+            return "未开始"
+        active_mode = (
+            session.active_mode
+            if session.active_mode in {"resume", "exec"}
+            else "resume"
+        )
+        thread_id = (
+            self._current_exec_thread_id(session)
+            if active_mode == "exec"
+            else session.native_thread_id or session.thread_id
+        )
+        if not thread_id and not session.active:
+            return "未开始"
+        if not thread_id:
+            return f"{active_mode} | 未绑定"
+        return f"{active_mode} | {thread_id}"
+
+    def _workspace_recent_history_lines(self) -> list[str]:
+        try:
+            entries = self.list_history_sessions()[:2]
+        except ValueError:
+            return ["最近历史：不可用"]
+        if not entries:
+            return ["最近历史：无"]
+        lines = ["最近历史："]
+        for entry in entries:
+            lines.append(
+                "- "
+                f"{entry.thread_name} | "
+                f"{self._format_history_relative_time(entry.updated_at)}"
+            )
+        return lines
+
+    def navigate_workspace_panel(
+        self,
+        chat_key: str,
+        token: str,
+        version: int,
+        action: str,
+    ) -> WorkspacePanelState:
+        panel = self.get_workspace_panel(chat_key, token=token, version=version)
+        if action != "refresh":
+            raise ValueError("未知工作台操作。")
+        return self._replace_workspace_panel_state(chat_key, previous=panel)
+
+    def render_workspace_panel(
+        self, chat_key: str
+    ) -> tuple[str, InlineKeyboardMarkup]:
+        panel = self.get_workspace_panel(chat_key)
+        preferences = self.get_preferences(chat_key)
+        lines = [
+            "当前工作台",
+            f"当前模式：{self._workspace_active_mode(chat_key, preferences)}",
+            f"当前设置：{format_preferences_summary(preferences)}",
+            f"当前工作目录：{preferences.workdir}",
+            f"当前会话：{self._workspace_session_summary(chat_key)}",
+            *self._workspace_recent_history_lines(),
+        ]
+        keyboard = [
+            [
+                InlineKeyboardButton(
+                    text="模式",
+                    callback_data=encode_workspace_callback(
+                        panel.token, panel.version, "mode"
+                    ),
+                ),
+                InlineKeyboardButton(
+                    text="模型",
+                    callback_data=encode_workspace_callback(
+                        panel.token, panel.version, "model"
+                    ),
+                ),
+                InlineKeyboardButton(
+                    text="强度",
+                    callback_data=encode_workspace_callback(
+                        panel.token, panel.version, "effort"
+                    ),
+                ),
+                InlineKeyboardButton(
+                    text="权限",
+                    callback_data=encode_workspace_callback(
+                        panel.token, panel.version, "permission"
+                    ),
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="目录",
+                    callback_data=encode_workspace_callback(
+                        panel.token, panel.version, "browse"
+                    ),
+                ),
+                InlineKeyboardButton(
+                    text="历史",
+                    callback_data=encode_workspace_callback(
+                        panel.token, panel.version, "history"
+                    ),
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="新会话",
+                    callback_data=encode_workspace_callback(
+                        panel.token, panel.version, "new"
+                    ),
+                ),
+                InlineKeyboardButton(
+                    text="停止",
+                    callback_data=encode_workspace_callback(
+                        panel.token, panel.version, "stop"
+                    ),
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="刷新",
+                    callback_data=encode_workspace_callback(
+                        panel.token, panel.version, "refresh"
+                    ),
+                ),
+                InlineKeyboardButton(
+                    text="关闭",
+                    callback_data=encode_workspace_callback(
+                        panel.token, panel.version, "close"
+                    ),
+                ),
+            ],
+        ]
+        return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=keyboard)
 
     def render_onboarding_panel(
         self, chat_key: str

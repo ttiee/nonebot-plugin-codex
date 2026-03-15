@@ -451,6 +451,56 @@ def test_render_setting_panels_show_expected_headings(
     assert markup.inline_keyboard
 
 
+def test_render_workspace_panel_shows_current_state_and_recent_history(
+    tmp_path: Path,
+    model_cache_file: Path,
+) -> None:
+    service = make_service(tmp_path, model_cache_file)
+    workdir = tmp_path / "workspace"
+    workdir.mkdir()
+    service.preference_overrides["private_1"] = service._default_preferences()  # noqa: SLF001
+    service.preference_overrides["private_1"].workdir = str(workdir.resolve())
+    session = service.activate_chat("private_1")
+    session.active_mode = "exec"
+    session.exec_thread_id = "exec-1"
+    session.thread_id = "exec-1"
+    write_history_session(
+        tmp_path,
+        session_id="exec-1",
+        thread_name="Recent Session",
+        assistant_text="assistant world",
+    )
+
+    service.open_workspace_panel("private_1")
+    text, markup = service.render_workspace_panel("private_1")
+
+    assert "当前工作台" in text
+    assert "当前模式：exec" in text
+    assert "模型: gpt-5 | 推理: xhigh | 权限: safe" in text
+    assert f"当前工作目录：{workdir.resolve()}" in text
+    assert "当前会话：exec | exec-1" in text
+    assert "Recent Session" in text
+    assert markup.inline_keyboard
+
+
+def test_navigate_workspace_panel_refresh_reuses_token_and_bumps_version(
+    tmp_path: Path,
+    model_cache_file: Path,
+) -> None:
+    service = make_service(tmp_path, model_cache_file)
+
+    panel = service.open_workspace_panel("private_1")
+    refreshed = service.navigate_workspace_panel(
+        "private_1",
+        panel.token,
+        panel.version,
+        "refresh",
+    )
+
+    assert refreshed.token == panel.token
+    assert refreshed.version == panel.version + 1
+
+
 @pytest.mark.asyncio
 async def test_apply_permission_setting_panel_updates_preference(
     tmp_path: Path, model_cache_file: Path

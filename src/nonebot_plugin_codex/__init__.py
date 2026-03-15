@@ -88,6 +88,8 @@ if _runtime_ready:
     codex_cmd = on_command("codex", priority=10, block=True)
     help_cmd = on_command("help", priority=10, block=True)
     start_cmd = on_command("start", priority=10, block=True)
+    panel_cmd = on_command("panel", priority=10, block=True)
+    status_cmd = on_command("status", priority=10, block=True)
     mode_cmd = on_command("mode", priority=10, block=True)
     exec_cmd = on_command("exec", priority=10, block=True)
     new_cmd = on_command("new", priority=10, block=True)
@@ -125,6 +127,12 @@ if _runtime_ready:
         block=True,
         rule=handlers.is_onboarding_callback,
     )
+    workspace_callback = on_type(
+        CallbackQueryEvent,
+        priority=10,
+        block=True,
+        rule=handlers.is_workspace_callback,
+    )
 
     @codex_cmd.handle()
     async def _handle_codex(
@@ -139,6 +147,14 @@ if _runtime_ready:
     @start_cmd.handle()
     async def _handle_start(bot: Bot, event: MessageEvent) -> None:
         await handlers.handle_start(bot, event)
+
+    @panel_cmd.handle()
+    async def _handle_panel(bot: Bot, event: MessageEvent) -> None:
+        await handlers.handle_panel(bot, event)
+
+    @status_cmd.handle()
+    async def _handle_status(bot: Bot, event: MessageEvent) -> None:
+        await handlers.handle_status(bot, event)
 
     @mode_cmd.handle()
     async def _handle_mode(
@@ -219,6 +235,12 @@ if _runtime_ready:
         bot: Bot, event: CallbackQueryEvent
     ) -> None:
         await handlers.handle_onboarding_callback(bot, event)
+
+    @workspace_callback.handle()
+    async def _handle_workspace_callback(
+        bot: Bot, event: CallbackQueryEvent
+    ) -> None:
+        await handlers.handle_workspace_callback(bot, event)
 
     @follow_up.handle()
     async def _handle_follow_up(bot: Bot, event: MessageEvent) -> None:
