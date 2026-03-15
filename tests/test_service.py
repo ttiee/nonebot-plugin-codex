@@ -70,6 +70,84 @@ def make_service_without_model_cache(tmp_path: Path) -> CodexBridgeService:
     )
 
 
+def write_history_session(
+    tmp_path: Path,
+    *,
+    session_id: str = "exec-1",
+    thread_name: str = "Exec Session",
+    user_text: str = "user hello",
+    assistant_text: str = "assistant world",
+) -> Path:
+    index_path = tmp_path / ".codex" / "session_index.jsonl"
+    index_path.parent.mkdir(parents=True, exist_ok=True)
+    index_path.write_text(
+        json.dumps(
+            {
+                "id": session_id,
+                "thread_name": thread_name,
+                "updated_at": "2025-03-01T00:00:02Z",
+            },
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    session_path = (
+        tmp_path / ".codex" / "sessions" / "2025" / "03" / f"{session_id}.jsonl"
+    )
+    session_path.parent.mkdir(parents=True, exist_ok=True)
+    session_path.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "timestamp": "2025-03-01T00:00:00Z",
+                        "type": "session_meta",
+                        "payload": {
+                            "id": session_id,
+                            "cwd": str(tmp_path / "workspace"),
+                            "source": "exec",
+                            "timestamp": "2025-03-01T00:00:02Z",
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                json.dumps(
+                    {
+                        "timestamp": "2025-03-01T00:00:01Z",
+                        "type": "event_msg",
+                        "payload": {
+                            "type": "user_message",
+                            "message": user_text,
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                json.dumps(
+                    {
+                        "timestamp": "2025-03-01T00:00:02Z",
+                        "type": "response_item",
+                        "payload": {
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [
+                                {
+                                    "type": "output_text",
+                                    "text": assistant_text,
+                                }
+                            ],
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return session_path
+
+
 def test_build_exec_argv_for_safe_and_resume_mode() -> None:
     argv = build_exec_argv(
         "codex",
@@ -224,6 +302,98 @@ async def test_apply_history_session_uses_existing_cwd_when_original_missing(
 
     assert "原工作目录不存在，已保留当前工作目录。" in notice
     assert f"当前工作目录：{current_dir.resolve()}" in notice
+
+
+@pytest.mark.asyncio
+async def test_refresh_history_sessions_keeps_exec_list_entries_lightweight_until_open(
+    tmp_path: Path, model_cache_file: Path
+) -> None:
+    service = make_service(tmp_path, model_cache_file)
+    write_history_session(tmp_path)
+
+    entries = await service.refresh_history_sessions()
+
+    exec_entry = next(entry for entry in entries if entry.session_id == "exec-1")
+    assert exec_entry.preview == "Exec Session"
+    assert exec_entry.last_user_text is None
+    assert exec_entry.last_assistant_text is None
+
+    browser = service._replace_history_browser_state(  # noqa: SLF001
+        "private_1",
+        page=0,
+        scope="exec",
+        selected_session_id="exec-1",
+    )
+    selected = next(entry for entry in browser.entries if entry.session_id == "exec-1")
+
+    assert selected.preview == "assistant world"
+    assert selected.last_user_text == "user hello"
+    assert selected.last_assistant_text == "assistant world"
+
+
+@pytest.mark.asyncio
+async def test_refresh_history_sessions_collects_history_logs_once_with_native_client(
+    tmp_path: Path,
+    model_cache_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = make_service(
+        tmp_path,
+        model_cache_file,
+        threads=[
+            NativeThreadSummary(
+                thread_id="native-1",
+                thread_name="Native Session",
+                updated_at="2025-03-01T00:00:00Z",
+                cwd=str(tmp_path / "workspace"),
+                source_kind="cli",
+                preview="native preview",
+            )
+        ],
+    )
+    write_history_session(tmp_path)
+    calls = 0
+    original = service._collect_history_log_summaries  # noqa: SLF001
+
+    def counting_collect_history_log_summaries(*args: object, **kwargs: object):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(
+        service,
+        "_collect_history_log_summaries",
+        counting_collect_history_log_summaries,
+    )
+
+    await service.refresh_history_sessions()
+
+    assert calls == 1
+
+
+def test_list_history_sessions_reuses_cached_exec_log_summary_when_file_unchanged(
+    tmp_path: Path,
+    model_cache_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = make_service(tmp_path, model_cache_file)
+    session_path = write_history_session(tmp_path)
+    calls = 0
+    path_type = type(session_path)
+    original_open = path_type.open
+
+    def counting_open(self: Path, *args: object, **kwargs: object):
+        nonlocal calls
+        if self == session_path:
+            calls += 1
+        return original_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(path_type, "open", counting_open)
+
+    service.list_history_sessions()
+    service.list_history_sessions()
+
+    assert calls == 1
 
 
 @pytest.mark.parametrize(

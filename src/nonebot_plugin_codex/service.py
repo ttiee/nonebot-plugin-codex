@@ -142,6 +142,16 @@ class HistoricalSessionSummary:
     preview: str | None = None
     last_user_text: str | None = None
     last_assistant_text: str | None = None
+    details_loaded: bool = False
+
+
+@dataclass(slots=True)
+class HistoryLogCacheEntry:
+    archived: bool
+    mtime_ns: int
+    size: int
+    basic_summary: HistoricalSessionSummary | None = None
+    detailed_summary: HistoricalSessionSummary | None = None
 
 
 @dataclass(slots=True)
@@ -486,6 +496,7 @@ class CodexBridgeService:
         self.setting_panels: dict[str, SettingPanelState] = {}
         self._native_history_entries: list[HistoricalSessionSummary] = []
         self._native_history_loaded = False
+        self._history_log_cache: dict[str, HistoryLogCacheEntry] = {}
 
     def configured_workdir(self) -> str:
         configured = Path(self.settings.workdir).expanduser()
@@ -726,7 +737,8 @@ class CodexBridgeService:
         path: Path,
         *,
         archived: bool,
-        indexed: tuple[str, str] | None,
+        index_entries: dict[str, tuple[str, str]] | None = None,
+        include_preview: bool,
     ) -> HistoricalSessionSummary | None:
         session_id: str | None = None
         cwd: str | None = None
@@ -735,6 +747,7 @@ class CodexBridgeService:
         discovered_updated_at: str | None = None
         last_user_text: str | None = None
         last_assistant_text: str | None = None
+        indexed: tuple[str, str] | None = None
 
         try:
             with path.open("r", encoding="utf-8") as handle:
@@ -748,15 +761,16 @@ class CodexBridgeService:
                     timestamp = payload.get("timestamp")
                     if isinstance(timestamp, str) and timestamp:
                         discovered_updated_at = timestamp
-                    if discovered_title is None:
+                    if discovered_title is None and indexed is None:
                         discovered_title = self._extract_history_title(payload)
-                    extracted_message = self._extract_history_message(payload)
-                    if extracted_message is not None:
-                        role, text = extracted_message
-                        if role == "user":
-                            last_user_text = text
-                        elif role == "assistant":
-                            last_assistant_text = text
+                    if include_preview:
+                        extracted_message = self._extract_history_message(payload)
+                        if extracted_message is not None:
+                            role, text = extracted_message
+                            if role == "user":
+                                last_user_text = text
+                            elif role == "assistant":
+                                last_assistant_text = text
                     if payload.get("type") != "session_meta":
                         continue
                     meta = payload.get("payload")
@@ -765,6 +779,8 @@ class CodexBridgeService:
                     meta_session_id = meta.get("id")
                     if isinstance(meta_session_id, str) and meta_session_id:
                         session_id = meta_session_id
+                        if index_entries is not None and indexed is None:
+                            indexed = index_entries.get(session_id)
                     meta_cwd = meta.get("cwd")
                     if isinstance(meta_cwd, str) and meta_cwd:
                         cwd = meta_cwd
@@ -774,7 +790,11 @@ class CodexBridgeService:
                     meta_updated_at = meta.get("timestamp")
                     if isinstance(meta_updated_at, str) and meta_updated_at:
                         discovered_updated_at = meta_updated_at
+                    if indexed is not None and not include_preview:
+                        break
         except OSError:
+            if indexed is None and index_entries is not None:
+                indexed = index_entries.get(path.stem)
             if indexed is None:
                 return None
             return HistoricalSessionSummary(
@@ -786,10 +806,14 @@ class CodexBridgeService:
                 archived=archived,
                 missing=True,
                 preview=indexed[0],
+                details_loaded=not include_preview,
             )
 
         if not session_id:
             return None
+
+        if indexed is None and index_entries is not None:
+            indexed = index_entries.get(session_id)
 
         if indexed is not None:
             thread_name, updated_at = indexed
@@ -797,7 +821,10 @@ class CodexBridgeService:
             thread_name = discovered_title or session_id
             updated_at = discovered_updated_at or ""
 
-        preview = last_assistant_text or last_user_text or thread_name
+        if include_preview:
+            preview = last_assistant_text or last_user_text or thread_name
+        else:
+            preview = thread_name
         return HistoricalSessionSummary(
             session_id=session_id,
             thread_name=thread_name,
@@ -811,15 +838,85 @@ class CodexBridgeService:
             preview=preview,
             last_user_text=last_user_text,
             last_assistant_text=last_assistant_text,
+            details_loaded=include_preview,
         )
 
-    def _collect_history_log_summaries(self) -> dict[str, HistoricalSessionSummary]:
+    def _clone_history_summary(
+        self, summary: HistoricalSessionSummary
+    ) -> HistoricalSessionSummary:
+        return HistoricalSessionSummary(**asdict(summary))
+
+    def _history_log_signature(self, path: Path) -> tuple[int, int] | None:
+        try:
+            stat = path.stat()
+        except OSError:
+            return None
+        return stat.st_mtime_ns, stat.st_size
+
+    def _load_history_log_summary(
+        self,
+        path: Path,
+        *,
+        archived: bool,
+        index_entries: dict[str, tuple[str, str]] | None = None,
+        include_preview: bool,
+    ) -> HistoricalSessionSummary | None:
+        signature = self._history_log_signature(path)
+        cache_key = str(path)
+        cached = self._history_log_cache.get(cache_key)
+        if (
+            signature is not None
+            and cached is not None
+            and cached.archived == archived
+            and (cached.mtime_ns, cached.size) == signature
+        ):
+            cached_summary = (
+                cached.detailed_summary if include_preview else cached.basic_summary
+            )
+            if cached_summary is not None:
+                return self._clone_history_summary(cached_summary)
+        elif signature is not None:
+            cached = HistoryLogCacheEntry(
+                archived=archived,
+                mtime_ns=signature[0],
+                size=signature[1],
+            )
+            self._history_log_cache[cache_key] = cached
+
+        summary = self._parse_history_session_file(
+            path,
+            archived=archived,
+            index_entries=index_entries,
+            include_preview=include_preview,
+        )
+        if summary is None or signature is None:
+            return summary
+        if cached is None:
+            cached = HistoryLogCacheEntry(
+                archived=archived,
+                mtime_ns=signature[0],
+                size=signature[1],
+            )
+            self._history_log_cache[cache_key] = cached
+        if include_preview:
+            cached.detailed_summary = self._clone_history_summary(summary)
+        else:
+            cached.basic_summary = self._clone_history_summary(summary)
+        return summary
+
+    def _collect_history_log_summaries(
+        self,
+        index_entries: dict[str, tuple[str, str]] | None = None,
+        *,
+        include_preview: bool = False,
+    ) -> dict[str, HistoricalSessionSummary]:
         collected: dict[str, HistoricalSessionSummary] = {}
         for path, archived in self._iter_history_files():
-            summary = self._parse_history_session_file(
+            summary = self._load_history_log_summary(
                 path,
                 archived=archived,
-                indexed=None,
+                index_entries=index_entries,
+                include_preview=include_preview,
             )
             if summary is None:
                 continue
@@ -832,6 +929,8 @@ class CodexBridgeService:
         self,
         summary: HistoricalSessionSummary,
         log_summary: HistoricalSessionSummary | None,
+        *,
+        include_preview: bool = False,
     ) -> HistoricalSessionSummary:
         if log_summary is None:
             return summary
@@ -843,14 +942,16 @@ class CodexBridgeService:
         summary.source_path = log_summary.source_path
         summary.archived = log_summary.archived
         summary.missing = log_summary.missing
-        summary.last_user_text = log_summary.last_user_text
-        summary.last_assistant_text = log_summary.last_assistant_text
-        if log_summary.last_assistant_text or log_summary.last_user_text:
-            summary.preview = (
-                log_summary.last_assistant_text or log_summary.last_user_text
-            )
-        elif summary.preview is None and log_summary.preview is not None:
-            summary.preview = log_summary.preview
+        if include_preview:
+            summary.last_user_text = log_summary.last_user_text
+            summary.last_assistant_text = log_summary.last_assistant_text
+            if log_summary.last_assistant_text or log_summary.last_user_text:
+                summary.preview = (
+                    log_summary.last_assistant_text or log_summary.last_user_text
+                )
+            elif summary.preview is None and log_summary.preview is not None:
+                summary.preview = log_summary.preview
+            summary.details_loaded = log_summary.details_loaded
         return summary
 
     def _iter_history_files(self) -> list[tuple[Path, bool]]:
@@ -869,14 +970,20 @@ class CodexBridgeService:
     def _collect_exec_history_sessions(
         self,
         index_entries: dict[str, tuple[str, str]],
+        *,
+        history_logs: dict[str, HistoricalSessionSummary] | None = None,
     ) -> list[HistoricalSessionSummary]:
-        collected = self._collect_history_log_summaries()
+        source_logs = history_logs or self._collect_history_log_summaries(index_entries)
+        collected = {
+            session_id: self._clone_history_summary(summary)
+            for session_id, summary in source_logs.items()
+        }
         for summary in collected.values():
             indexed = index_entries.get(summary.session_id)
             if indexed is not None:
                 summary.thread_name = indexed[0]
                 summary.updated_at = indexed[1]
-                if summary.last_user_text is None and summary.last_assistant_text is None:
+                if not summary.details_loaded:
                     summary.preview = summary.thread_name
 
         for session_id, (thread_name, updated_at) in index_entries.items():
@@ -890,6 +997,7 @@ class CodexBridgeService:
                 source_kind="exec",
                 missing=True,
                 preview=thread_name,
+                details_loaded=False,
             )
 
         return sorted(
@@ -898,10 +1006,14 @@ class CodexBridgeService:
             reverse=True,
         )
 
-    async def _load_native_history_sessions(self) -> list[HistoricalSessionSummary]:
+    async def _load_native_history_sessions(
+        self,
+        history_logs: dict[str, HistoricalSessionSummary] | None = None,
+    ) -> list[HistoricalSessionSummary]:
         if self.native_client is None:
             return []
-        history_logs = self._collect_history_log_summaries()
+        if history_logs is None:
+            history_logs = self._collect_history_log_summaries()
         client = self._spawn_native_client()
         try:
             threads = await client.list_threads()
@@ -924,11 +1036,15 @@ class CodexBridgeService:
                 self._enrich_history_summary_from_log(
                     entry,
                     history_logs.get(thread.thread_id),
+                    include_preview=False,
                 )
             )
         return sorted(entries, key=lambda session: session.updated_at, reverse=True)
 
-    def _get_native_history_sessions(self) -> list[HistoricalSessionSummary]:
+    def _get_native_history_sessions(
+        self,
+        history_logs: dict[str, HistoricalSessionSummary] | None = None,
+    ) -> list[HistoricalSessionSummary]:
         if self.native_client is None:
             return []
         if not self._native_history_loaded:
@@ -936,25 +1052,28 @@ class CodexBridgeService:
                 asyncio.get_running_loop()
             except RuntimeError:
                 self._native_history_entries = asyncio.run(
-                    self._load_native_history_sessions()
+                    self._load_native_history_sessions(history_logs=history_logs)
                 )
                 self._native_history_loaded = True
             else:
                 return list(self._native_history_entries)
         return list(self._native_history_entries)
 
-    async def refresh_history_sessions(self) -> list[HistoricalSessionSummary]:
-        self._native_history_entries = await self._load_native_history_sessions()
-        self._native_history_loaded = True
-        return self.list_history_sessions()
-
-    def list_history_sessions(self) -> list[HistoricalSessionSummary]:
-        index_entries, has_index = self._load_history_index()
-        native_entries = self._get_native_history_sessions()
+    def _build_history_sessions(
+        self,
+        index_entries: dict[str, tuple[str, str]],
+        *,
+        has_index: bool,
+        history_logs: dict[str, HistoricalSessionSummary],
+        native_entries: list[HistoricalSessionSummary],
+    ) -> list[HistoricalSessionSummary]:
         native_ids = {entry.session_id for entry in native_entries}
         exec_entries = [
             entry
-            for entry in self._collect_exec_history_sessions(index_entries)
+            for entry in self._collect_exec_history_sessions(
+                index_entries,
+                history_logs=history_logs,
+            )
             if entry.session_id not in native_ids
         ]
         if native_entries or exec_entries:
@@ -962,6 +1081,31 @@ class CodexBridgeService:
         if not has_index:
             raise ValueError("未找到 Codex 历史会话索引。")
         raise ValueError("未找到 Codex 历史会话。")
+
+    async def refresh_history_sessions(self) -> list[HistoricalSessionSummary]:
+        index_entries, has_index = self._load_history_index()
+        history_logs = self._collect_history_log_summaries(index_entries)
+        self._native_history_entries = await self._load_native_history_sessions(
+            history_logs=history_logs
+        )
+        self._native_history_loaded = True
+        return self._build_history_sessions(
+            index_entries,
+            has_index=has_index,
+            history_logs=history_logs,
+            native_entries=self._native_history_entries,
+        )
+
+    def list_history_sessions(self) -> list[HistoricalSessionSummary]:
+        index_entries, has_index = self._load_history_index()
+        history_logs = self._collect_history_log_summaries(index_entries)
+        native_entries = self._get_native_history_sessions(history_logs=history_logs)
+        return self._build_history_sessions(
+            index_entries,
+            has_index=has_index,
+            history_logs=history_logs,
+            native_entries=native_entries,
+        )
 
     def get_history_session(self, session_id: str) -> HistoricalSessionSummary:
         for session in self.list_history_sessions():
@@ -996,20 +1140,62 @@ class CodexBridgeService:
         scope: str = "menu",
         selected_session_id: str | None = None,
         previous: HistoryBrowserState | None = None,
+        entries: list[HistoricalSessionSummary] | None = None,
     ) -> HistoryBrowserState:
-        entries = self._history_entries_for_scope(scope)
+        resolved_entries = (
+            entries
+            if entries is not None
+            else self._history_entries_for_scope(scope)
+        )
         state = HistoryBrowserState(
             chat_key=chat_key,
-            page=self._clamp_history_page(entries, page),
+            page=self._clamp_history_page(resolved_entries, page),
             token=previous.token if previous else self._make_browser_token(),
             version=(previous.version + 1) if previous else 1,
-            entries=entries,
+            entries=resolved_entries,
             scope=scope,
             selected_session_id=selected_session_id,
             message_id=previous.message_id if previous else None,
         )
+        if selected_session_id is not None:
+            self._ensure_selected_history_entry_details(state)
         self.history_browsers[chat_key] = state
         return state
+
+    def _ensure_history_entry_details(
+        self, entry: HistoricalSessionSummary
+    ) -> HistoricalSessionSummary:
+        if entry.details_loaded:
+            return entry
+        if entry.source_path is None:
+            entry.details_loaded = True
+            return entry
+
+        log_summary = self._load_history_log_summary(
+            Path(entry.source_path),
+            archived=entry.archived,
+            index_entries=self._load_history_index()[0],
+            include_preview=True,
+        )
+        if log_summary is None:
+            entry.details_loaded = True
+            return entry
+        return self._enrich_history_summary_from_log(
+            entry,
+            log_summary,
+            include_preview=True,
+        )
+
+    def _ensure_selected_history_entry_details(
+        self, browser: HistoryBrowserState
+    ) -> None:
+        if browser.selected_session_id is None:
+            return
+        for index, entry in enumerate(browser.entries):
+            if entry.session_id != browser.selected_session_id:
+                continue
+            browser.entries[index] = self._ensure_history_entry_details(entry)
+            return
 
     def open_history_browser(self, chat_key: str) -> HistoryBrowserState:
         return self._replace_history_browser_state(chat_key, page=0, scope="menu")
@@ -1083,6 +1269,7 @@ class CodexBridgeService:
                 scope=browser.scope,
                 selected_session_id=browser.entries[index].session_id,
                 previous=browser,
+                entries=browser.entries,
             )
         if action == "back":
             return self._replace_history_browser_state(
@@ -1090,6 +1277,7 @@ class CodexBridgeService:
                 page=browser.page,
                 scope=browser.scope,
                 previous=browser,
+                entries=browser.entries,
             )
         if action == "refresh":
             return self._replace_history_browser_state(
@@ -1105,6 +1293,7 @@ class CodexBridgeService:
                 page=browser.page - 1,
                 scope=browser.scope,
                 previous=browser,
+                entries=browser.entries,
             )
         if action == "next":
             return self._replace_history_browser_state(
@@ -1112,6 +1301,7 @@ class CodexBridgeService:
                 page=browser.page + 1,
                 scope=browser.scope,
                 previous=browser,
+                entries=browser.entries,
             )
         raise ValueError("未知历史会话操作。")
 
