@@ -7,7 +7,7 @@ from typing import Any
 
 from nonebot.adapters.telegram import Bot
 from nonebot.adapters.telegram.message import Message
-from nonebot.adapters.telegram.exception import NetworkError
+from nonebot.adapters.telegram.exception import ActionFailed, NetworkError
 from nonebot.adapters.telegram.event import MessageEvent, CallbackQueryEvent
 
 from .service import (
@@ -26,8 +26,10 @@ from .service import (
     decode_setting_callback,
     should_forward_follow_up,
 )
+from .telegram_rendering import render_telegram_html
 
 RETRY_AFTER_PATTERN = re.compile(r"retry after (\d+(?:\.\d+)?)", re.IGNORECASE)
+PARSE_ENTITIES_ERROR = "can't parse entities"
 
 
 class TelegramHandlers:
@@ -67,17 +69,50 @@ class TelegramHandlers:
                     raise
                 await asyncio.sleep(retry_after)
 
+    def is_parse_entities_error(self, exc: Exception) -> bool:
+        return isinstance(exc, ActionFailed) and PARSE_ENTITIES_ERROR in str(exc).lower()
+
     async def send_event_message(
         self, bot: Bot, event: MessageEvent, text: str, **kwargs: object
     ):
-        return await self.retry_telegram_call(lambda: bot.send(event, text, **kwargs))
+        rendered_kwargs = dict(kwargs)
+        rendered_kwargs["parse_mode"] = "HTML"
+        rendered_text = render_telegram_html(text)
+        try:
+            return await self.retry_telegram_call(
+                lambda: bot.send(event, rendered_text, **rendered_kwargs)
+            )
+        except Exception as exc:
+            if not self.is_parse_entities_error(exc):
+                raise
+            plain_kwargs = dict(kwargs)
+            plain_kwargs.pop("parse_mode", None)
+            return await self.retry_telegram_call(
+                lambda: bot.send(event, text, **plain_kwargs)
+            )
 
     async def send_chat_message(
         self, bot: Bot, chat_id: int, text: str, **kwargs: object
     ):
-        return await self.retry_telegram_call(
-            lambda: bot.send_message(chat_id=chat_id, text=text, **kwargs)
-        )
+        rendered_kwargs = dict(kwargs)
+        rendered_kwargs["parse_mode"] = "HTML"
+        rendered_text = render_telegram_html(text)
+        try:
+            return await self.retry_telegram_call(
+                lambda: bot.send_message(
+                    chat_id=chat_id,
+                    text=rendered_text,
+                    **rendered_kwargs,
+                )
+            )
+        except Exception as exc:
+            if not self.is_parse_entities_error(exc):
+                raise
+            plain_kwargs = dict(kwargs)
+            plain_kwargs.pop("parse_mode", None)
+            return await self.retry_telegram_call(
+                lambda: bot.send_message(chat_id=chat_id, text=text, **plain_kwargs)
+            )
 
     async def edit_message(
         self,
@@ -88,14 +123,31 @@ class TelegramHandlers:
         text: str,
         **kwargs: object,
     ):
-        return await self.retry_telegram_call(
-            lambda: bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=message_id,
-                text=text,
-                **kwargs,
+        rendered_kwargs = dict(kwargs)
+        rendered_kwargs["parse_mode"] = "HTML"
+        rendered_text = render_telegram_html(text)
+        try:
+            return await self.retry_telegram_call(
+                lambda: bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    text=rendered_text,
+                    **rendered_kwargs,
+                )
             )
-        )
+        except Exception as exc:
+            if not self.is_parse_entities_error(exc):
+                raise
+            plain_kwargs = dict(kwargs)
+            plain_kwargs.pop("parse_mode", None)
+            return await self.retry_telegram_call(
+                lambda: bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    text=text,
+                    **plain_kwargs,
+                )
+            )
 
     async def update_progress(self, bot: Bot, event: MessageEvent, text: str) -> None:
         session = self.service.get_session(self.chat_key(event))

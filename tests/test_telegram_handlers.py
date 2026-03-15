@@ -7,6 +7,7 @@ from dataclasses import field, dataclass
 
 import pytest
 
+from nonebot.adapters.telegram.exception import ActionFailed
 from nonebot_plugin_codex.telegram import TelegramHandlers
 from nonebot_plugin_codex.service import (
     ChatSession,
@@ -80,6 +81,44 @@ class FakeBot:
 
     async def answer_callback_query(self, callback_id: str, **kwargs: Any) -> None:
         self.answered.append({"id": callback_id, **kwargs})
+
+
+class HtmlFailingBot(FakeBot):
+    async def send(self, event: FakeEvent, text: str, **kwargs: Any) -> SimpleNamespace:
+        payload = {"chat_id": event.chat.id, "text": text, **kwargs}
+        self.sent.append(payload)
+        if kwargs.get("parse_mode") == "HTML":
+            raise ActionFailed(
+                "Bad Request: can't parse entities: Unsupported start tag"
+            )
+        return SimpleNamespace(message_id=len(self.sent))
+
+    async def send_message(
+        self, *, chat_id: int, text: str, **kwargs: Any
+    ) -> SimpleNamespace:
+        payload = {"chat_id": chat_id, "text": text, **kwargs}
+        self.sent.append(payload)
+        if kwargs.get("parse_mode") == "HTML":
+            raise ActionFailed(
+                "Bad Request: can't parse entities: Unsupported start tag"
+            )
+        return SimpleNamespace(message_id=len(self.sent))
+
+    async def edit_message_text(
+        self, *, chat_id: int, message_id: int, text: str, **kwargs: Any
+    ) -> None:
+        self.edited.append(
+            {
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "text": text,
+                **kwargs,
+            }
+        )
+        if kwargs.get("parse_mode") == "HTML":
+            raise ActionFailed(
+                "Bad Request: can't parse entities: Unsupported start tag"
+            )
 
 
 class FakeService:
@@ -306,6 +345,69 @@ async def test_handle_exec_requires_prompt() -> None:
     await handlers.handle_exec(bot, FakeEvent(""), FakeMessage(""))
 
     assert bot.sent[0]["text"] == "请在 /exec 后输入要执行的内容。"
+
+
+@pytest.mark.asyncio
+async def test_send_event_message_uses_html_parse_mode_and_renders_text() -> None:
+    handlers = TelegramHandlers(FakeService())
+    bot = FakeBot()
+    event = FakeEvent("")
+
+    await handlers.send_event_message(bot, event, "**bold**")
+
+    assert bot.sent[0]["parse_mode"] == "HTML"
+    assert bot.sent[0]["text"] == "<b>bold</b>"
+
+
+@pytest.mark.asyncio
+async def test_edit_message_uses_html_parse_mode_and_renders_text() -> None:
+    handlers = TelegramHandlers(FakeService())
+    bot = FakeBot()
+
+    await handlers.edit_message(bot, chat_id=1, message_id=2, text="**bold**")
+
+    assert bot.edited[0]["parse_mode"] == "HTML"
+    assert bot.edited[0]["text"] == "<b>bold</b>"
+
+
+@pytest.mark.asyncio
+async def test_send_event_message_falls_back_to_plain_text_when_html_fails() -> None:
+    handlers = TelegramHandlers(FakeService())
+    bot = HtmlFailingBot()
+    event = FakeEvent("")
+
+    await handlers.send_event_message(bot, event, "**bold**")
+
+    assert bot.sent[0]["parse_mode"] == "HTML"
+    assert bot.sent[0]["text"] == "<b>bold</b>"
+    assert "parse_mode" not in bot.sent[1]
+    assert bot.sent[1]["text"] == "**bold**"
+
+
+@pytest.mark.asyncio
+async def test_send_chat_message_falls_back_to_plain_text_when_html_fails() -> None:
+    handlers = TelegramHandlers(FakeService())
+    bot = HtmlFailingBot()
+
+    await handlers.send_chat_message(bot, 1, "**bold**")
+
+    assert bot.sent[0]["parse_mode"] == "HTML"
+    assert bot.sent[0]["text"] == "<b>bold</b>"
+    assert "parse_mode" not in bot.sent[1]
+    assert bot.sent[1]["text"] == "**bold**"
+
+
+@pytest.mark.asyncio
+async def test_edit_message_falls_back_to_plain_text_when_html_fails() -> None:
+    handlers = TelegramHandlers(FakeService())
+    bot = HtmlFailingBot()
+
+    await handlers.edit_message(bot, chat_id=1, message_id=2, text="**bold**")
+
+    assert bot.edited[0]["parse_mode"] == "HTML"
+    assert bot.edited[0]["text"] == "<b>bold</b>"
+    assert "parse_mode" not in bot.edited[1]
+    assert bot.edited[1]["text"] == "**bold**"
 
 
 @pytest.mark.asyncio
