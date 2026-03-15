@@ -10,6 +10,8 @@ from nonebot_plugin_codex.telegram_commands import (
 def test_build_telegram_commands_uses_expected_order_and_chinese_descriptions() -> None:
     assert [spec.name for spec in TELEGRAM_COMMAND_SPECS] == [
         "codex",
+        "help",
+        "start",
         "mode",
         "exec",
         "new",
@@ -26,6 +28,8 @@ def test_build_telegram_commands_uses_expected_order_and_chinese_descriptions() 
 
     assert [command.model_dump() for command in build_telegram_commands()] == [
         {"command": "codex", "description": "连接 Codex 并可附带首条任务"},
+        {"command": "help", "description": "打开使用引导面板"},
+        {"command": "start", "description": "打开使用引导面板"},
         {"command": "mode", "description": "查看或切换默认模式"},
         {"command": "exec", "description": "以一次性 exec 模式执行任务"},
         {"command": "new", "description": "新建当前聊天会话"},
@@ -43,6 +47,6 @@ def test_build_telegram_commands_uses_expected_order_and_chinese_descriptions() 
 
 def test_build_plugin_usage_lists_all_commands() -> None:
     assert build_plugin_usage() == (
-        "/codex [prompt], /mode, /exec, /new, /stop, /models, /model, /effort, "
-        "/permission, /pwd, /cd, /home, /sessions"
+        "/codex [prompt], /help, /start, /mode, /exec, /new, /stop, /models, "
+        "/model, /effort, /permission, /pwd, /cd, /home, /sessions"
     )

@@ -38,6 +38,8 @@ HISTORY_STALE_MESSAGE = "历史会话面板已失效，请重新执行 /sessions
 SETTING_CALLBACK_PREFIX = "csp"
 SETTING_STALE_MESSAGE = "设置面板已失效，请重新执行对应命令"
 SUPPORTED_SETTING_PANELS = {"mode", "model", "effort", "permission"}
+ONBOARDING_CALLBACK_PREFIX = "cop"
+ONBOARDING_STALE_MESSAGE = "引导面板已失效，请重新执行 /codex"
 
 
 @dataclass(slots=True)
@@ -195,6 +197,14 @@ class SettingPanelState:
     message_id: int | None = None
 
 
+@dataclass(slots=True)
+class OnboardingPanelState:
+    chat_key: str
+    token: str
+    version: int
+    message_id: int | None = None
+
+
 def build_chat_key(chat_type: str, chat_id: int) -> str:
     if chat_type == "private":
         return f"private_{chat_id}"
@@ -328,6 +338,22 @@ def decode_setting_callback(payload: str) -> tuple[str, int, str, str | None]:
     action = parts[3]
     value = parts[4] if len(parts) == 5 else None
     return token, version, action, value
+
+
+def encode_onboarding_callback(token: str, version: int, action: str) -> str:
+    return f"{ONBOARDING_CALLBACK_PREFIX}:{token}:{version}:{action}"
+
+
+def decode_onboarding_callback(payload: str) -> tuple[str, int, str]:
+    parts = payload.split(":")
+    if len(parts) != 4 or parts[0] != ONBOARDING_CALLBACK_PREFIX:
+        raise ValueError("无效的引导回调。")
+    token = parts[1]
+    try:
+        version = int(parts[2])
+    except ValueError as exc:
+        raise ValueError("无效的引导回调。") from exc
+    return token, version, parts[3]
 
 
 def parse_event_line(line: str) -> dict[str, Any] | None:
@@ -501,6 +527,7 @@ class CodexBridgeService:
         self.directory_browsers: dict[str, DirectoryBrowserState] = {}
         self.history_browsers: dict[str, HistoryBrowserState] = {}
         self.setting_panels: dict[str, SettingPanelState] = {}
+        self.onboarding_panels: dict[str, OnboardingPanelState] = {}
         self._native_history_entries: list[HistoricalSessionSummary] = []
         self._native_history_loaded = False
         self._history_log_cache: dict[str, HistoryLogCacheEntry] = {}
@@ -1638,6 +1665,126 @@ class CodexBridgeService:
     def close_setting_panel(self, chat_key: str, token: str, version: int) -> None:
         self.get_setting_panel(chat_key, token=token, version=version)
         self.setting_panels.pop(chat_key, None)
+
+    def _replace_onboarding_panel_state(
+        self,
+        chat_key: str,
+        *,
+        previous: OnboardingPanelState | None = None,
+    ) -> OnboardingPanelState:
+        state = OnboardingPanelState(
+            chat_key=chat_key,
+            token=previous.token if previous else self._make_browser_token(),
+            version=(previous.version + 1) if previous else 1,
+            message_id=previous.message_id if previous else None,
+        )
+        self.onboarding_panels[chat_key] = state
+        return state
+
+    def open_onboarding_panel(self, chat_key: str) -> OnboardingPanelState:
+        self.get_preferences(chat_key)
+        return self._replace_onboarding_panel_state(chat_key)
+
+    def get_onboarding_panel(
+        self,
+        chat_key: str,
+        token: str | None = None,
+        version: int | None = None,
+    ) -> OnboardingPanelState:
+        state = self.onboarding_panels.get(chat_key)
+        if state is None:
+            raise ValueError(ONBOARDING_STALE_MESSAGE)
+        if token is not None and state.token != token:
+            raise ValueError(ONBOARDING_STALE_MESSAGE)
+        if version is not None and state.version != version:
+            raise ValueError(ONBOARDING_STALE_MESSAGE)
+        return state
+
+    def remember_onboarding_panel_message(
+        self,
+        chat_key: str,
+        token: str,
+        message_id: int | None,
+    ) -> None:
+        if message_id is None:
+            return
+        panel = self.get_onboarding_panel(chat_key, token=token)
+        panel.message_id = message_id
+
+    def close_onboarding_panel(self, chat_key: str, token: str, version: int) -> None:
+        self.get_onboarding_panel(chat_key, token=token, version=version)
+        self.onboarding_panels.pop(chat_key, None)
+
+    def render_onboarding_panel(
+        self, chat_key: str
+    ) -> tuple[str, InlineKeyboardMarkup]:
+        panel = self.get_onboarding_panel(chat_key)
+        preferences = self.get_preferences(chat_key)
+        session = self.sessions.get(chat_key)
+        active_mode = (
+            session.active_mode
+            if session is not None and session.active_mode in {"resume", "exec"}
+            else preferences.default_mode
+        )
+        has_bound_session = bool(
+            session
+            and (
+                session.active
+                or session.thread_id
+                or session.native_thread_id
+                or session.exec_thread_id
+            )
+        )
+        lines = [
+            "开始使用 Codex",
+            f"当前模式：{active_mode}",
+            f"当前工作目录：{preferences.workdir}",
+            f"当前设置：{format_preferences_summary(preferences)}",
+            f"当前会话：{'可继续' if has_bound_session else '未开始'}",
+            (
+                "推荐：直接发送任务，或先切换目录；"
+                "一次性任务用 /exec；恢复上下文看历史会话。"
+            ),
+        ]
+        keyboard = [
+            [
+                InlineKeyboardButton(
+                    text="切换目录",
+                    callback_data=encode_onboarding_callback(
+                        panel.token, panel.version, "browse"
+                    ),
+                ),
+                InlineKeyboardButton(
+                    text="当前设置",
+                    callback_data=encode_onboarding_callback(
+                        panel.token, panel.version, "settings"
+                    ),
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="历史会话",
+                    callback_data=encode_onboarding_callback(
+                        panel.token, panel.version, "history"
+                    ),
+                ),
+                InlineKeyboardButton(
+                    text="新开会话",
+                    callback_data=encode_onboarding_callback(
+                        panel.token, panel.version, "new"
+                    ),
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="关闭",
+                    callback_data=encode_onboarding_callback(
+                        panel.token, panel.version, "close"
+                    ),
+                )
+            ],
+        ]
+        return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=keyboard)
 
     def navigate_setting_panel(
         self,

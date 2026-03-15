@@ -86,6 +86,8 @@ if _runtime_ready:
         await sync_telegram_commands(bot)
 
     codex_cmd = on_command("codex", priority=10, block=True)
+    help_cmd = on_command("help", priority=10, block=True)
+    start_cmd = on_command("start", priority=10, block=True)
     mode_cmd = on_command("mode", priority=10, block=True)
     exec_cmd = on_command("exec", priority=10, block=True)
     new_cmd = on_command("new", priority=10, block=True)
@@ -117,12 +119,26 @@ if _runtime_ready:
         block=True,
         rule=handlers.is_setting_callback,
     )
+    onboarding_callback = on_type(
+        CallbackQueryEvent,
+        priority=10,
+        block=True,
+        rule=handlers.is_onboarding_callback,
+    )
 
     @codex_cmd.handle()
     async def _handle_codex(
         bot: Bot, event: MessageEvent, args: Message = CommandArg()
     ) -> None:
         await handlers.handle_codex(bot, event, args)
+
+    @help_cmd.handle()
+    async def _handle_help(bot: Bot, event: MessageEvent) -> None:
+        await handlers.handle_help(bot, event)
+
+    @start_cmd.handle()
+    async def _handle_start(bot: Bot, event: MessageEvent) -> None:
+        await handlers.handle_start(bot, event)
 
     @mode_cmd.handle()
     async def _handle_mode(
@@ -197,6 +213,12 @@ if _runtime_ready:
     @setting_callback.handle()
     async def _handle_setting_callback(bot: Bot, event: CallbackQueryEvent) -> None:
         await handlers.handle_setting_callback(bot, event)
+
+    @onboarding_callback.handle()
+    async def _handle_onboarding_callback(
+        bot: Bot, event: CallbackQueryEvent
+    ) -> None:
+        await handlers.handle_onboarding_callback(bot, event)
 
     @follow_up.handle()
     async def _handle_follow_up(bot: Bot, event: MessageEvent) -> None:

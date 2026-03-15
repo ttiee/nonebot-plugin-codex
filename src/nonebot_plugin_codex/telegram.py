@@ -15,11 +15,14 @@ from .service import (
     HISTORY_STALE_MESSAGE,
     BROWSER_CALLBACK_PREFIX,
     HISTORY_CALLBACK_PREFIX,
+    ONBOARDING_STALE_MESSAGE,
+    ONBOARDING_CALLBACK_PREFIX,
     SETTING_STALE_MESSAGE,
     SETTING_CALLBACK_PREFIX,
     CodexBridgeService,
     chunk_text,
     build_chat_key,
+    decode_onboarding_callback,
     format_result_text,
     decode_browser_callback,
     decode_history_callback,
@@ -346,6 +349,11 @@ class TelegramHandlers:
             f"{SETTING_CALLBACK_PREFIX}:"
         )
 
+    async def is_onboarding_callback(self, event: CallbackQueryEvent) -> bool:
+        return isinstance(event.data, str) and event.data.startswith(
+            f"{ONBOARDING_CALLBACK_PREFIX}:"
+        )
+
     def callback_message_id(self, event: CallbackQueryEvent) -> int | None:
         message = getattr(event, "message", None)
         return getattr(message, "message_id", None)
@@ -354,6 +362,16 @@ class TelegramHandlers:
         browser = self.service.open_directory_browser(chat_key)
         text, markup = self.service.render_directory_browser(chat_key)
         message = await self.send_event_message(bot, event, text, reply_markup=markup)
+        self.service.remember_browser_message(
+            chat_key, browser.token, getattr(message, "message_id", None)
+        )
+
+    async def send_browser_to_chat(
+        self, bot: Bot, chat_id: int, chat_key: str
+    ) -> None:
+        browser = self.service.open_directory_browser(chat_key)
+        text, markup = self.service.render_directory_browser(chat_key)
+        message = await self.send_chat_message(bot, chat_id, text, reply_markup=markup)
         self.service.remember_browser_message(
             chat_key, browser.token, getattr(message, "message_id", None)
         )
@@ -371,6 +389,19 @@ class TelegramHandlers:
             getattr(message, "message_id", None),
         )
 
+    async def send_history_browser_to_chat(
+        self, bot: Bot, chat_id: int, chat_key: str
+    ) -> None:
+        await self.service.refresh_history_sessions()
+        browser = self.service.open_history_browser(chat_key)
+        text, markup = self.service.render_history_browser(chat_key)
+        message = await self.send_chat_message(bot, chat_id, text, reply_markup=markup)
+        self.service.remember_history_browser_message(
+            chat_key,
+            browser.token,
+            getattr(message, "message_id", None),
+        )
+
     async def send_setting_panel(
         self,
         bot: Bot,
@@ -382,6 +413,34 @@ class TelegramHandlers:
         text, markup = self.service.render_setting_panel(chat_key)
         message = await self.send_event_message(bot, event, text, reply_markup=markup)
         self.service.remember_setting_panel_message(
+            chat_key,
+            panel.token,
+            getattr(message, "message_id", None),
+        )
+
+    async def send_setting_panel_to_chat(
+        self,
+        bot: Bot,
+        chat_id: int,
+        chat_key: str,
+        kind: str,
+    ) -> None:
+        panel = self.service.open_setting_panel(chat_key, kind)
+        text, markup = self.service.render_setting_panel(chat_key)
+        message = await self.send_chat_message(bot, chat_id, text, reply_markup=markup)
+        self.service.remember_setting_panel_message(
+            chat_key,
+            panel.token,
+            getattr(message, "message_id", None),
+        )
+
+    async def send_onboarding_panel(
+        self, bot: Bot, event: MessageEvent, chat_key: str
+    ) -> None:
+        panel = self.service.open_onboarding_panel(chat_key)
+        text, markup = self.service.render_onboarding_panel(chat_key)
+        message = await self.send_event_message(bot, event, text, reply_markup=markup)
+        self.service.remember_onboarding_panel_message(
             chat_key,
             panel.token,
             getattr(message, "message_id", None),
@@ -502,17 +561,13 @@ class TelegramHandlers:
             await self.execute_prompt(bot, event, prompt)
             return
 
-        await self.send_event_message(
-            bot,
-            event,
-            (
-                "Codex 已连接。\n"
-                f"当前模式：{self.service.get_session(chat_key).active_mode}\n"
-                "普通消息继续当前模式，/mode 切换默认模式，"
-                "/exec 执行一次性任务，/new 新开，/stop 退出。\n"
-                f"当前设置：{self.current_summary(chat_key)}"
-            ),
-        )
+        await self.send_onboarding_panel(bot, event, chat_key)
+
+    async def handle_help(self, bot: Bot, event: MessageEvent) -> None:
+        await self.send_onboarding_panel(bot, event, self.chat_key(event))
+
+    async def handle_start(self, bot: Bot, event: MessageEvent) -> None:
+        await self.send_onboarding_panel(bot, event, self.chat_key(event))
 
     async def handle_mode(self, bot: Bot, event: MessageEvent, args: Message) -> None:
         chat_key = self.chat_key(event)
@@ -765,6 +820,70 @@ class TelegramHandlers:
                 event.id,
                 text=text,
                 show_alert=text == SETTING_STALE_MESSAGE,
+            )
+        except RuntimeError as exc:
+            await bot.answer_callback_query(
+                event.id, text=self.error_text(exc), show_alert=True
+            )
+
+    async def handle_onboarding_callback(
+        self, bot: Bot, event: CallbackQueryEvent
+    ) -> None:
+        if not isinstance(event.data, str):
+            await bot.answer_callback_query(
+                event.id, text=ONBOARDING_STALE_MESSAGE, show_alert=True
+            )
+            return
+
+        try:
+            chat_key = self.chat_key(event)
+            chat_id = self.event_chat(event).id
+            token, version, action = decode_onboarding_callback(event.data)
+            self.service.get_onboarding_panel(chat_key, token=token, version=version)
+            if action == "browse":
+                await self.send_browser_to_chat(bot, chat_id, chat_key)
+                await bot.answer_callback_query(event.id)
+                return
+            if action == "history":
+                await self.send_history_browser_to_chat(bot, chat_id, chat_key)
+                await bot.answer_callback_query(event.id)
+                return
+            if action == "settings":
+                await self.send_setting_panel_to_chat(bot, chat_id, chat_key, "mode")
+                await bot.answer_callback_query(event.id)
+                return
+            if action == "new":
+                await self.service.reset_chat(chat_key, keep_active=True)
+                await self.send_chat_message(
+                    bot,
+                    chat_id,
+                    (
+                        "已清空当前 Codex 会话。下一条普通消息会按以下设置新开会话：\n"
+                        f"{self.current_summary(chat_key)}"
+                    ),
+                )
+                await bot.answer_callback_query(event.id, text="已新开会话。")
+                return
+            if action == "close":
+                self.service.close_onboarding_panel(chat_key, token, version)
+                message_id = self.callback_message_id(event)
+                if message_id is not None:
+                    await self.edit_message(
+                        bot,
+                        chat_id=chat_id,
+                        message_id=message_id,
+                        text="使用引导已关闭。",
+                        reply_markup=None,
+                    )
+                await bot.answer_callback_query(event.id, text="已关闭。")
+                return
+            raise ValueError("未知引导操作。")
+        except ValueError as exc:
+            text = str(exc) or ONBOARDING_STALE_MESSAGE
+            await bot.answer_callback_query(
+                event.id,
+                text=text,
+                show_alert=text == ONBOARDING_STALE_MESSAGE,
             )
         except RuntimeError as exc:
             await bot.answer_callback_query(

@@ -108,17 +108,32 @@ codex_workdir = "/home/yourname"
 一个典型工作流通常是这样的：
 
 ```text
-/codex 帮我检查当前仓库为什么测试失败
+/codex
 /cd /home/yourname/projects/demo
-/permission danger
 /mode resume
 然后继续直接发送普通文本消息续聊
+```
+
+`/codex` 不带参数时会打开一个 Telegram 内的使用引导面板，方便你直接查看当前模式、工作目录、设置摘要，并进入目录浏览、设置面板或历史会话。
+
+你也可以直接把首条任务跟在 `/codex` 后面：
+
+```text
+/codex 帮我检查当前仓库为什么测试失败
+/permission danger
 ```
 
 你也可以把一次性任务交给 `exec` 模式：
 
 ```text
 /exec 用三点总结这个仓库 README 还缺什么
+```
+
+如果你希望显式打开引导入口，也可以使用：
+
+```text
+/help
+/start
 ```
 
 ## 配置说明
@@ -165,7 +180,9 @@ codex_stream_read_limit = 1048576
 
 | 命令 | 说明 |
 | --- | --- |
-| `/codex [prompt]` | 连接 Codex 并可附带首条任务 |
+| `/codex [prompt]` | 打开引导面板，或直接附带首条任务连接 Codex |
+| `/help` | 打开使用引导面板 |
+| `/start` | 打开使用引导面板 |
 | `/mode [resume\|exec]` | 查看或切换默认模式 |
 | `/exec <prompt>` | 以一次性 `exec` 模式执行任务 |
 | `/new` | 新建当前聊天会话 |

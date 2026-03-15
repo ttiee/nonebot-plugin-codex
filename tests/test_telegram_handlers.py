@@ -144,6 +144,8 @@ class FakeService:
         self.browser_text = "目录浏览"
         self.history_text = "Codex 历史会话"
         self.setting_text = "模式设置"
+        self.onboarding_text = "开始使用 Codex"
+        self.onboarding_markup = SimpleNamespace(name="onboarding")
         self.default_mode = "resume"
         self.execute_calls: list[tuple[str, str | None]] = []
         self.browser_token = "token"
@@ -157,6 +159,9 @@ class FakeService:
         self.setting_kind = "mode"
         self.setting_updates: list[str] = []
         self.updated_workdirs: list[str] = []
+        self.onboarding_token = "onboarding"
+        self.onboarding_version = 1
+        self.onboarding_closed = False
 
     def get_session(self, chat_key: str) -> ChatSession:
         return self.session
@@ -327,6 +332,36 @@ class FakeService:
         self.setting_updates.append(mode)
         return f"当前默认模式：{mode}"
 
+    def open_onboarding_panel(self, chat_key: str) -> SimpleNamespace:
+        return SimpleNamespace(token=self.onboarding_token)
+
+    def render_onboarding_panel(self, chat_key: str) -> tuple[str, Any]:
+        return self.onboarding_text, self.onboarding_markup
+
+    def remember_onboarding_panel_message(
+        self, chat_key: str, token: str, message_id: int | None
+    ) -> None:
+        return None
+
+    def get_onboarding_panel(
+        self,
+        chat_key: str,
+        token: str | None = None,
+        version: int | None = None,
+    ) -> SimpleNamespace:
+        if token is not None and token != self.onboarding_token:
+            raise ValueError("引导面板已失效，请重新执行 /codex")
+        if version is not None and version != self.onboarding_version:
+            raise ValueError("引导面板已失效，请重新执行 /codex")
+        return SimpleNamespace(
+            token=self.onboarding_token,
+            version=self.onboarding_version,
+            message_id=1,
+        )
+
+    def close_onboarding_panel(self, chat_key: str, token: str, version: int) -> None:
+        self.onboarding_closed = True
+
 
 def make_real_service(
     tmp_path: Path,
@@ -374,7 +409,7 @@ def make_real_service_without_model_cache(tmp_path: Path) -> CodexBridgeService:
 
 
 @pytest.mark.asyncio
-async def test_handle_codex_without_prompt_sends_status_message() -> None:
+async def test_handle_codex_without_prompt_sends_onboarding_panel() -> None:
     service = FakeService()
     handlers = TelegramHandlers(service)
     bot = FakeBot()
@@ -382,8 +417,21 @@ async def test_handle_codex_without_prompt_sends_status_message() -> None:
 
     await handlers.handle_codex(bot, event, FakeMessage(""))
 
-    assert "Codex 已连接" in bot.sent[0]["text"]
-    assert "当前模式" in bot.sent[0]["text"]
+    assert bot.sent[0]["text"] == "开始使用 Codex"
+    assert bot.sent[0]["reply_markup"] is service.onboarding_markup
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("handler_name", ["handle_help", "handle_start"])
+async def test_help_and_start_open_onboarding_panel(handler_name: str) -> None:
+    service = FakeService()
+    handlers = TelegramHandlers(service)
+    bot = FakeBot()
+
+    await getattr(handlers, handler_name)(bot, FakeEvent(""))
+
+    assert bot.sent[0]["text"] == "开始使用 Codex"
+    assert bot.sent[0]["reply_markup"] is service.onboarding_markup
 
 
 @pytest.mark.asyncio
@@ -477,6 +525,71 @@ async def test_handle_sessions_opens_history_browser() -> None:
     await handlers.handle_sessions(bot, FakeEvent(""))
 
     assert bot.sent[0]["text"] == "Codex 历史会话"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("payload", "expected_text"),
+    [
+        ("cop:onboarding:1:browse", "目录浏览"),
+        ("cop:onboarding:1:history", "Codex 历史会话"),
+        ("cop:onboarding:1:settings", "模式设置"),
+    ],
+)
+async def test_handle_onboarding_callback_opens_existing_panels(
+    payload: str,
+    expected_text: str,
+) -> None:
+    service = FakeService()
+    handlers = TelegramHandlers(service)
+    bot = FakeBot()
+
+    await handlers.handle_onboarding_callback(bot, FakeCallbackEvent(payload))
+
+    assert bot.sent[0]["text"] == expected_text
+
+
+@pytest.mark.asyncio
+async def test_handle_onboarding_callback_new_resets_chat() -> None:
+    service = FakeService()
+    service.session.thread_id = "thread-1"
+    handlers = TelegramHandlers(service)
+    bot = FakeBot()
+
+    await handlers.handle_onboarding_callback(
+        bot, FakeCallbackEvent("cop:onboarding:1:new")
+    )
+
+    assert "已清空当前 Codex 会话" in bot.sent[0]["text"]
+    assert bot.answered[0]["text"] == "已新开会话。"
+
+
+@pytest.mark.asyncio
+async def test_handle_onboarding_callback_close_closes_panel() -> None:
+    service = FakeService()
+    handlers = TelegramHandlers(service)
+    bot = FakeBot()
+
+    await handlers.handle_onboarding_callback(
+        bot, FakeCallbackEvent("cop:onboarding:1:close")
+    )
+
+    assert service.onboarding_closed is True
+    assert bot.edited[0]["text"] == "使用引导已关闭。"
+    assert bot.answered[0]["text"] == "已关闭。"
+
+
+@pytest.mark.asyncio
+async def test_handle_onboarding_callback_rejects_stale_payload() -> None:
+    handlers = TelegramHandlers(FakeService())
+    bot = FakeBot()
+
+    await handlers.handle_onboarding_callback(
+        bot, FakeCallbackEvent("cop:stale:1:browse")
+    )
+
+    assert bot.answered[0]["text"] == "引导面板已失效，请重新执行 /codex"
+    assert bot.answered[0]["show_alert"] is True
 
 
 @pytest.mark.asyncio
@@ -656,5 +769,5 @@ async def test_handle_codex_without_prompt_works_when_model_cache_is_missing(
 
     await handlers.handle_codex(bot, FakeEvent(""), FakeMessage(""))
 
-    assert "Codex 已连接" in bot.sent[0]["text"]
+    assert "开始使用" in bot.sent[0]["text"]
     assert "模型: gpt-5" in bot.sent[0]["text"]
