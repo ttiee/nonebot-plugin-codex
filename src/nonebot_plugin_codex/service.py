@@ -155,6 +155,13 @@ class HistoryLogCacheEntry:
 
 
 @dataclass(slots=True)
+class ModelCacheEntry:
+    mtime_ns: int
+    size: int
+    models: dict[str, ModelInfo]
+
+
+@dataclass(slots=True)
 class HistoryBrowserState:
     chat_key: str
     page: int
@@ -497,6 +504,7 @@ class CodexBridgeService:
         self._native_history_entries: list[HistoricalSessionSummary] = []
         self._native_history_loaded = False
         self._history_log_cache: dict[str, HistoryLogCacheEntry] = {}
+        self._models_cache: ModelCacheEntry | None = None
 
     def configured_workdir(self) -> str:
         configured = Path(self.settings.workdir).expanduser()
@@ -1778,16 +1786,34 @@ class CodexBridgeService:
 
     def load_models(self) -> dict[str, ModelInfo]:
         try:
+            stat = self.settings.models_cache_path.stat()
+        except FileNotFoundError as exc:
+            raise FileNotFoundError("未找到 Codex 模型缓存文件。") from exc
+        except OSError as exc:
+            raise ValueError("无法读取 Codex 模型缓存文件。") from exc
+
+        signature = (stat.st_mtime_ns, stat.st_size)
+        cached = self._models_cache
+        if cached is not None and (cached.mtime_ns, cached.size) == signature:
+            return dict(cached.models)
+
+        try:
             payload = json.loads(
                 self.settings.models_cache_path.read_text(encoding="utf-8")
             )
         except FileNotFoundError as exc:
+            self._models_cache = None
             raise FileNotFoundError("未找到 Codex 模型缓存文件。") from exc
+        except OSError as exc:
+            self._models_cache = None
+            raise ValueError("无法读取 Codex 模型缓存文件。") from exc
         except json.JSONDecodeError as exc:
+            self._models_cache = None
             raise ValueError("Codex 模型缓存文件损坏，无法解析。") from exc
 
         models = payload.get("models")
         if not isinstance(models, list):
+            self._models_cache = None
             raise ValueError("Codex 模型缓存文件格式不正确。")
 
         parsed: dict[str, ModelInfo] = {}
@@ -1813,7 +1839,13 @@ class CodexBridgeService:
                 supported_reasoning_levels=supported,
             )
         if not parsed:
+            self._models_cache = None
             raise ValueError("Codex 模型缓存中没有可用模型。")
+        self._models_cache = ModelCacheEntry(
+            mtime_ns=signature[0],
+            size=signature[1],
+            models=parsed,
+        )
         return parsed
 
     def list_models(self) -> list[ModelInfo]:

@@ -209,6 +209,32 @@ def test_directory_browser_home_uses_configured_workdir(
     assert browser.current_path == str(tmp_path.resolve())
 
 
+def test_load_models_reuses_cached_result_when_file_unchanged(
+    tmp_path: Path,
+    model_cache_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = make_service(tmp_path, model_cache_file)
+    calls = 0
+    path_type = type(model_cache_file)
+    original_read_text = path_type.read_text
+
+    def counting_read_text(self: Path, *args: object, **kwargs: object) -> str:
+        nonlocal calls
+        if self == model_cache_file:
+            calls += 1
+        return original_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(path_type, "read_text", counting_read_text)
+
+    first = service.load_models()
+    second = service.load_models()
+
+    assert set(first) == {"gpt-5", "gpt-4.1"}
+    assert set(second) == {"gpt-5", "gpt-4.1"}
+    assert calls == 1
+
+
 @pytest.mark.asyncio
 async def test_update_default_mode_persists_preference_and_switches_active_mode(
     tmp_path: Path, model_cache_file: Path
