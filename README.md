@@ -209,6 +209,7 @@ codex_stream_read_limit = 8388608
 | `/cd [path]` | 切换目录或打开目录浏览器 |
 | `/home` | 将工作目录重置到 Home |
 | `/sessions` | 打开历史会话浏览器 |
+| `/compact` | 压缩当前 `resume` 会话上下文 |
 
 ## 模式说明
 
@@ -219,6 +220,7 @@ codex_stream_read_limit = 8388608
 - 优先使用 `codex app-server`
 - 为同一聊天维持 native thread
 - 更适合连续编码、持续追问和多轮调试
+- 支持在 Telegram 中用 `/compact` 压缩较早对话上下文
 
 ### `exec`
 

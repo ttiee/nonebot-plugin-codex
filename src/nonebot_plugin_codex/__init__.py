@@ -102,6 +102,7 @@ if _runtime_ready:
     cd_cmd = on_command("cd", priority=10, block=True)
     home_cmd = on_command("home", priority=10, block=True)
     sessions_cmd = on_command("sessions", priority=10, block=True)
+    compact_cmd = on_command("compact", priority=10, block=True)
     follow_up = on_message(priority=20, block=True, rule=handlers.is_active_follow_up)
     browser_callback = on_type(
         CallbackQueryEvent,
@@ -217,6 +218,10 @@ if _runtime_ready:
     @sessions_cmd.handle()
     async def _handle_sessions(bot: Bot, event: MessageEvent) -> None:
         await handlers.handle_sessions(bot, event)
+
+    @compact_cmd.handle()
+    async def _handle_compact(bot: Bot, event: MessageEvent) -> None:
+        await handlers.handle_compact(bot, event)
 
     @browser_callback.handle()
     async def _handle_browser_callback(bot: Bot, event: CallbackQueryEvent) -> None:

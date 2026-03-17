@@ -139,6 +139,111 @@ async def test_native_client_start_resume_and_stream_text() -> None:
 
 
 @pytest.mark.asyncio
+async def test_native_client_run_turn_reports_context_compaction_progress() -> None:
+    process = FakeProcess(
+        stdout=FakeStdout(
+            [
+                json.dumps({"jsonrpc": "2.0", "id": 1, "result": {}}) + "\n",
+                json.dumps({"jsonrpc": "2.0", "id": 2, "result": {}}) + "\n",
+                json.dumps({"jsonrpc": "2.0", "method": "turn/started", "params": {}})
+                + "\n",
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "item/completed",
+                        "params": {
+                            "threadId": "thread-1",
+                            "item": {
+                                "id": "compact-1",
+                                "type": "contextCompaction",
+                                "summary": "已压缩较早对话上下文。",
+                            },
+                        },
+                    }
+                )
+                + "\n",
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "item/agentMessage/delta",
+                        "params": {"delta": "hello"},
+                    }
+                )
+                + "\n",
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "turn/completed",
+                        "params": {
+                            "threadId": "thread-1",
+                            "turn": {"status": "completed", "error": None},
+                        },
+                    }
+                )
+                + "\n",
+            ]
+        ),
+        stdin=FakeStdin(),
+    )
+
+    async def launcher(*_args: Any, **_kwargs: Any) -> FakeProcess:
+        return process
+
+    client = NativeCodexClient(binary="codex", launcher=launcher)
+    progress: list[Any] = []
+
+    result = await client.run_turn(
+        "thread-1",
+        "hello",
+        on_progress=progress.append,
+    )
+
+    assert [(entry.agent_key, entry.text) for entry in progress] == [
+        ("main", "开始处理请求"),
+        ("main", "已压缩较早对话上下文。"),
+    ]
+    assert result.exit_code == 0
+    assert result.final_text == "hello"
+
+
+@pytest.mark.asyncio
+async def test_native_client_compact_thread_waits_for_compaction_notice() -> None:
+    process = FakeProcess(
+        stdout=FakeStdout(
+            [
+                json.dumps({"jsonrpc": "2.0", "id": 1, "result": {}}) + "\n",
+                json.dumps({"jsonrpc": "2.0", "id": 2, "result": {}}) + "\n",
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "thread/compacted",
+                        "params": {
+                            "threadId": "thread-1",
+                            "summary": "已压缩当前 resume 会话上下文。",
+                        },
+                    }
+                )
+                + "\n",
+            ]
+        ),
+        stdin=FakeStdin(),
+    )
+
+    async def launcher(*_args: Any, **_kwargs: Any) -> FakeProcess:
+        return process
+
+    client = NativeCodexClient(binary="codex", launcher=launcher)
+    progress: list[Any] = []
+
+    notice = await client.compact_thread("thread-1", on_progress=progress.append)
+
+    assert notice == "已压缩当前 resume 会话上下文。"
+    assert [(entry.agent_key, entry.text) for entry in progress] == [
+        ("main", "已压缩当前 resume 会话上下文。"),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_native_client_ignores_commentary_text_and_reports_subagent_progress(
 ) -> None:
     process = FakeProcess(

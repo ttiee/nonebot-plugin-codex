@@ -168,6 +168,8 @@ class FakeService:
         self.workspace_token = "workspace"
         self.workspace_version = 1
         self.workspace_closed = False
+        self.compact_calls: list[str] = []
+        self.compact_notice = "已压缩当前 resume 会话上下文。"
         self.run_updates: list[tuple[str, Any]] = []
         self.run_progress_updates: list[Any] = []
         self.run_stream_updates: list[Any] = []
@@ -223,6 +225,10 @@ class FakeService:
     async def reset_chat(self, chat_key: str, *, keep_active: bool) -> ChatSession:
         self.session = ChatSession(active=keep_active)
         return self.session
+
+    async def compact_chat(self, chat_key: str) -> str:
+        self.compact_calls.append(chat_key)
+        return self.compact_notice
 
     def open_directory_browser(self, chat_key: str) -> SimpleNamespace:
         return SimpleNamespace(token="token")
@@ -730,6 +736,18 @@ async def test_handle_sessions_opens_history_browser() -> None:
     await handlers.handle_sessions(bot, FakeEvent(""))
 
     assert bot.sent[0]["text"] == "Codex 历史会话"
+
+
+@pytest.mark.asyncio
+async def test_handle_compact_compacts_current_resume_chat() -> None:
+    service = FakeService()
+    handlers = TelegramHandlers(service)
+    bot = FakeBot()
+
+    await handlers.handle_compact(bot, FakeEvent(""))
+
+    assert service.compact_calls == ["private_1"]
+    assert bot.sent[0]["text"] == "已压缩当前 resume 会话上下文。"
 
 
 @pytest.mark.asyncio

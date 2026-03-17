@@ -912,6 +912,13 @@ class TelegramHandlers:
         except (ValueError, RuntimeError) as exc:
             await self.send_event_message(bot, event, self.error_text(exc))
 
+    async def handle_compact(self, bot: Bot, event: MessageEvent) -> None:
+        try:
+            notice = await self.service.compact_chat(self.chat_key(event))
+            await self.send_event_message(bot, event, notice)
+        except (ValueError, RuntimeError) as exc:
+            await self.send_event_message(bot, event, self.error_text(exc))
+
     async def handle_browser_callback(self, bot: Bot, event: CallbackQueryEvent) -> None:
         if not isinstance(event.data, str):
             await bot.answer_callback_query(

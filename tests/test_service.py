@@ -20,15 +20,43 @@ from nonebot_plugin_codex.service import (
 class DummyNativeClient:
     def __init__(self, threads: list[NativeThreadSummary] | None = None) -> None:
         self._threads = threads or []
+        self.compact_calls: list[str] = []
+        self.compact_notice = "已压缩当前 resume 会话上下文。"
+        self.resume_calls: list[str] = []
+        self.require_resume_before_compact = False
 
     def clone(self) -> DummyNativeClient:
-        return DummyNativeClient(list(self._threads))
+        return self
 
     async def close(self, timeout: float = 5.0) -> None:
         return None
 
     async def list_threads(self) -> list[NativeThreadSummary]:
         return list(self._threads)
+
+    async def resume_thread(
+        self,
+        thread_id: str,
+        *,
+        workdir: str,
+        model: str,
+        reasoning_effort: str,
+        permission_mode: str,
+    ) -> NativeThreadSummary:
+        self.resume_calls.append(thread_id)
+        return NativeThreadSummary(
+            thread_id=thread_id,
+            thread_name="Native Session",
+            updated_at="2025-03-01T00:00:00Z",
+            cwd=workdir,
+            source_kind="cli",
+        )
+
+    async def compact_thread(self, thread_id: str) -> str:
+        if self.require_resume_before_compact and thread_id not in self.resume_calls:
+            raise RuntimeError(f"thread not found: {thread_id}")
+        self.compact_calls.append(thread_id)
+        return self.compact_notice
 
 
 def make_service(
@@ -356,6 +384,51 @@ async def test_apply_history_session_uses_existing_cwd_when_original_missing(
 
     assert "原工作目录不存在，已保留当前工作目录。" in notice
     assert f"当前工作目录：{current_dir.resolve()}" in notice
+
+
+@pytest.mark.asyncio
+async def test_compact_chat_uses_bound_native_resume_thread(
+    tmp_path: Path, model_cache_file: Path
+) -> None:
+    service = make_service(tmp_path, model_cache_file)
+    session = service.activate_chat("private_1")
+    session.active_mode = "resume"
+    session.native_thread_id = "native-1"
+    session.thread_id = "native-1"
+
+    notice = await service.compact_chat("private_1")
+
+    assert notice == "已压缩当前 resume 会话上下文。"
+    assert service.native_client.resume_calls == ["native-1"]
+    assert service.native_client.compact_calls == ["native-1"]
+
+
+@pytest.mark.asyncio
+async def test_compact_chat_resumes_thread_before_compacting(
+    tmp_path: Path, model_cache_file: Path
+) -> None:
+    service = make_service(tmp_path, model_cache_file)
+    service.native_client.require_resume_before_compact = True
+    session = service.activate_chat("private_1")
+    session.active_mode = "resume"
+    session.native_thread_id = "native-1"
+    session.thread_id = "native-1"
+
+    notice = await service.compact_chat("private_1")
+
+    assert notice == "已压缩当前 resume 会话上下文。"
+    assert service.native_client.resume_calls == ["native-1"]
+    assert service.native_client.compact_calls == ["native-1"]
+
+
+@pytest.mark.asyncio
+async def test_compact_chat_requires_bound_native_resume_thread(
+    tmp_path: Path, model_cache_file: Path
+) -> None:
+    service = make_service(tmp_path, model_cache_file)
+
+    with pytest.raises(ValueError, match="当前聊天没有可压缩的 resume 会话。"):
+        await service.compact_chat("private_1")
 
 
 @pytest.mark.asyncio

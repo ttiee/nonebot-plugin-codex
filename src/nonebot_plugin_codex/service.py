@@ -2696,6 +2696,33 @@ class CodexBridgeService:
         )
         return notice
 
+    async def compact_chat(self, chat_key: str) -> str:
+        self._ensure_not_running(chat_key)
+        if self.native_client is None:
+            raise RuntimeError("当前环境不支持 resume 会话压缩。")
+
+        session = self.activate_chat(chat_key)
+        if session.active_mode != "resume" or not session.native_thread_id:
+            raise ValueError("当前聊天没有可压缩的 resume 会话。")
+
+        native_runner = self._spawn_native_client()
+        if native_runner is None:
+            raise RuntimeError("当前环境不支持 resume 会话压缩。")
+        try:
+            preferences = self.get_preferences(chat_key)
+            thread = await native_runner.resume_thread(
+                session.native_thread_id,
+                workdir=preferences.workdir,
+                model=preferences.model,
+                reasoning_effort=preferences.reasoning_effort,
+                permission_mode=preferences.permission_mode,
+            )
+            self._set_native_thread_id(session, thread.thread_id)
+            notice = await native_runner.compact_thread(session.native_thread_id)
+        finally:
+            await self._close_native_runner(native_runner)
+        return notice or "已压缩当前 resume 会话上下文。"
+
     def render_directory_browser(self, chat_key: str) -> tuple[str, InlineKeyboardMarkup]:
         browser = self.get_browser(chat_key)
         preferences = self.get_preferences(chat_key)

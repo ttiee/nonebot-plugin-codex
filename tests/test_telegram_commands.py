@@ -26,6 +26,7 @@ def test_build_telegram_commands_uses_expected_order_and_chinese_descriptions() 
         "cd",
         "home",
         "sessions",
+        "compact",
     ]
 
     assert [command.model_dump() for command in build_telegram_commands()] == [
@@ -46,6 +47,7 @@ def test_build_telegram_commands_uses_expected_order_and_chinese_descriptions() 
         {"command": "cd", "description": "切换目录或打开目录浏览器"},
         {"command": "home", "description": "把工作目录重置到 Home"},
         {"command": "sessions", "description": "打开历史会话浏览器"},
+        {"command": "compact", "description": "压缩当前 resume 会话上下文"},
     ]
 
 
@@ -53,5 +55,5 @@ def test_build_plugin_usage_lists_all_commands() -> None:
     assert build_plugin_usage() == (
         "/codex [prompt], /help, /start, /panel, /status, /mode, /exec, /new, "
         "/stop, /models, /model, /effort, /permission, /pwd, /cd, /home, "
-        "/sessions"
+        "/sessions, /compact"
     )

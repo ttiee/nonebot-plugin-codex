@@ -93,6 +93,27 @@ def _normalize_agent_key(agent_key: object, *, main_thread_id: str) -> str:
     return "main" if agent_key == main_thread_id else agent_key
 
 
+def _extract_compaction_notice(payload: object) -> str | None:
+    if not isinstance(payload, dict):
+        return None
+    for key in (
+        "summary",
+        "summaryText",
+        "text",
+        "compactionSummary",
+        "compaction_summary",
+        "notice",
+        "message",
+    ):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    item = payload.get("item")
+    if isinstance(item, dict):
+        return _extract_compaction_notice(item)
+    return None
+
+
 def _format_collab_tool_progress(
     item: dict[str, Any],
     *,
@@ -305,6 +326,7 @@ class NativeCodexClient:
         final_text = ""
         pending_agent_messages: dict[str, str] = {}
         last_streamed_text: dict[str, str] = {}
+        last_compaction_notice: dict[str, str] = {}
 
         async def emit_stream_update(agent_key: str, text: str) -> None:
             if last_streamed_text.get(agent_key) == text:
@@ -312,6 +334,15 @@ class NativeCodexClient:
             last_streamed_text[agent_key] = text
             await _maybe_call(
                 on_stream_text,
+                NativeAgentUpdate(agent_key=agent_key, text=text),
+            )
+
+        async def emit_compaction_notice(agent_key: str, text: str) -> None:
+            if last_compaction_notice.get(agent_key) == text:
+                return
+            last_compaction_notice[agent_key] = text
+            await _maybe_call(
+                on_progress,
                 NativeAgentUpdate(agent_key=agent_key, text=text),
             )
 
@@ -373,6 +404,14 @@ class NativeCodexClient:
                     for update in collab_updates:
                         await _maybe_call(on_progress, update)
                     continue
+                if item_type == "contextCompaction":
+                    notice = _extract_compaction_notice(item) or (
+                        "正在压缩较早对话上下文…"
+                        if method == "item/started"
+                        else "已压缩较早对话上下文。"
+                    )
+                    await emit_compaction_notice(agent_key, notice)
+                    continue
                 if item_type == "agentMessage":
                     item_id = item.get("id")
                     if isinstance(item_id, str) and item_id:
@@ -408,6 +447,15 @@ class NativeCodexClient:
                     )
                 continue
 
+            if method == "thread/compacted":
+                agent_key = _normalize_agent_key(
+                    params.get("threadId"),
+                    main_thread_id=thread_id,
+                )
+                notice = _extract_compaction_notice(params) or "已压缩较早对话上下文。"
+                await emit_compaction_notice(agent_key, notice)
+                continue
+
             if method == "turn/completed":
                 turn = params.get("turn")
                 if not isinstance(turn, dict):
@@ -440,6 +488,67 @@ class NativeCodexClient:
                     thread_id=str(params.get("threadId") or thread_id),
                     diagnostics=diagnostics,
                 )
+
+    async def compact_thread(
+        self,
+        thread_id: str,
+        *,
+        on_progress: Callback | None = None,
+        timeout: float = 30.0,
+    ) -> str:
+        diagnostics: list[str] = []
+        last_notice = ""
+
+        async def emit_notice(notice: str) -> None:
+            nonlocal last_notice
+            if last_notice == notice:
+                return
+            last_notice = notice
+            await _maybe_call(
+                on_progress,
+                NativeAgentUpdate(agent_key="main", text=notice),
+            )
+
+        await self._request(
+            "thread/compact/start",
+            {"threadId": thread_id},
+            diagnostics=diagnostics,
+        )
+
+        while True:
+            try:
+                message = await asyncio.wait_for(
+                    self._read_message(diagnostics),
+                    timeout=timeout,
+                )
+            except asyncio.TimeoutError:
+                return last_notice or "已开始压缩当前 resume 会话上下文。"
+
+            if message is None:
+                continue
+
+            method = message.get("method")
+            params = message.get("params")
+            if not isinstance(method, str) or not isinstance(params, dict):
+                continue
+
+            if method in {"item/started", "item/completed"}:
+                item = params.get("item")
+                if not isinstance(item, dict) or item.get("type") != "contextCompaction":
+                    continue
+                notice = _extract_compaction_notice(item) or (
+                    "正在压缩当前 resume 会话上下文…"
+                    if method == "item/started"
+                    else "已压缩当前 resume 会话上下文。"
+                )
+                await emit_notice(notice)
+                continue
+
+            if method == "thread/compacted":
+                notice = _extract_compaction_notice(params) or last_notice
+                final_notice = notice or "已压缩当前 resume 会话上下文。"
+                await emit_notice(final_notice)
+                return final_notice
 
     async def list_threads(self) -> list[NativeThreadSummary]:
         threads: list[NativeThreadSummary] = []

@@ -98,6 +98,11 @@ TELEGRAM_COMMAND_SPECS: tuple[TelegramCommandSpec, ...] = (
         description="打开历史会话浏览器",
         usage="/sessions",
     ),
+    TelegramCommandSpec(
+        name="compact",
+        description="压缩当前 resume 会话上下文",
+        usage="/compact",
+    ),
 )
 
 
