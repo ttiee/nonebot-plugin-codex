@@ -12,6 +12,8 @@ BOLD_UNDERSCORE_PATTERN = re.compile(r"(?<!_)__(?=\S)(.+?)(?<=\S)__(?!_)")
 ITALIC_ASTERISK_PATTERN = re.compile(r"(?<!\*)\*(?=\S)(.+?)(?<=\S)\*(?!\*)")
 ITALIC_UNDERSCORE_PATTERN = re.compile(r"(?<![\w_])_(?=\S)(.+?)(?<=\S)_(?![\w_])")
 LIST_ITEM_PATTERN = re.compile(r"^(\s*)[-*]\s+(.*)$")
+HEADING_PATTERN = re.compile(r"^\s{0,3}(#{1,6})\s+(.*\S)\s*$")
+THEMATIC_BREAK_PATTERN = re.compile(r"^\s{0,3}([-*_])(?:\s*\1){2,}\s*$")
 TOKEN_TEMPLATE = "\x00TGHTML{index}\x00"
 
 
@@ -63,6 +65,17 @@ def _render_blocks(text: str, tokens: list[str]) -> str:
                 index += 1
             table_text = "\n".join(" | ".join(row) for row in table_lines)
             rendered.append(_stash(tokens, f"<pre>{html.escape(table_text)}</pre>"))
+            continue
+
+        if THEMATIC_BREAK_PATTERN.match(line):
+            rendered.append("\u2500" * 10)
+            index += 1
+            continue
+
+        heading_match = HEADING_PATTERN.match(line)
+        if heading_match is not None:
+            rendered.append(f"**{heading_match.group(2)}**")
+            index += 1
             continue
 
         match = LIST_ITEM_PATTERN.match(line)

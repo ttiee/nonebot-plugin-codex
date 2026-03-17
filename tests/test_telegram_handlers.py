@@ -511,6 +511,49 @@ async def test_handle_exec_requires_prompt() -> None:
 
 
 @pytest.mark.asyncio
+async def test_execute_prompt_keeps_single_agent_messages_unlabeled() -> None:
+    service = FakeService()
+    service.run_updates = [
+        (
+            "progress",
+            SimpleNamespace(
+                agent_key="main",
+                agent_label="主 agent",
+                text="Codex 运行中…",
+            ),
+        ),
+        (
+            "stream",
+            SimpleNamespace(
+                agent_key="main",
+                agent_label="主 agent",
+                text="主 agent 临时回复",
+            ),
+        ),
+    ]
+    service.run_result = SimpleNamespace(
+        cancelled=False,
+        exit_code=0,
+        final_text="主 agent 临时回复",
+        notice="",
+        diagnostics=[],
+    )
+    handlers = TelegramHandlers(service)
+    bot = FakeBot()
+
+    await handlers.execute_prompt(bot, FakeEvent(""), "hello")
+
+    assert [payload["text"] for payload in bot.sent[:2]] == [
+        "Codex 运行中…",
+        "主 agent 临时回复",
+    ]
+    assert any(
+        payload["message_id"] == 1 and payload["text"] == "Codex 已完成。"
+        for payload in bot.edited
+    )
+
+
+@pytest.mark.asyncio
 async def test_execute_prompt_keeps_separate_message_pairs_per_agent() -> None:
     service = FakeService()
     service.run_updates = [
@@ -576,22 +619,32 @@ async def test_execute_prompt_keeps_separate_message_pairs_per_agent() -> None:
     await handlers.execute_prompt(bot, FakeEvent(""), "hello")
 
     assert [payload["text"] for payload in bot.sent[:4]] == [
-        "主 agent\nCodex 运行中…",
-        "主 agent\n主 agent 临时回复",
-        "子 agent 1\nCodex 运行中…",
-        "子 agent 1\n子 agent 临时回复",
+        "Codex 运行中…",
+        "主 agent 临时回复",
+        "🛠️ 子 agent 1\nCodex 运行中…",
+        "🛠️ 子 agent 1\n子 agent 临时回复",
     ]
     assert any(
-        payload["message_id"] == 1 and payload["text"] == "主 agent\nCodex 已完成。"
+        payload["message_id"] == 1 and payload["text"] == "🧠 主 agent\nCodex 运行中…"
+        for payload in bot.edited
+    )
+    assert any(
+        payload["message_id"] == 2
+        and payload["text"] == "🧠 主 agent\n主 agent 临时回复"
+        for payload in bot.edited
+    )
+    assert any(
+        payload["message_id"] == 1 and payload["text"] == "🧠 主 agent\nCodex 已完成。"
         for payload in bot.edited
     )
     assert any(
         payload["message_id"] == 3
-        and payload["text"] == "子 agent 1\n子 agent 1 已完成。"
+        and payload["text"] == "🛠️ 子 agent 1\n子 agent 1 已完成。"
         for payload in bot.edited
     )
     assert any(
-        payload["message_id"] == 2 and payload["text"] == "主 agent\n主 agent 最终回复"
+        payload["message_id"] == 2
+        and payload["text"] == "🧠 主 agent\n主 agent 最终回复"
         for payload in bot.edited
     )
 

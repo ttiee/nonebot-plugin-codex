@@ -131,6 +131,7 @@ class AgentPanelState:
     agent_label: str
     progress_message_id: int | None = None
     stream_message_id: int | None = None
+    last_progress_text: str = ""
     last_stream_text: str = ""
     last_stream_rendered_text: str = ""
     stream_message_truncated: bool = False

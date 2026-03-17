@@ -54,3 +54,14 @@ def test_render_telegram_html_converts_markdown_table_to_preformatted_block() ->
         render_telegram_html(text)
         == "<pre>Name | Score\nAlice | 1\nBob | 2</pre>"
     )
+
+
+def test_render_telegram_html_converts_headings_to_bold_lines() -> None:
+    assert (
+        render_telegram_html("# 一级标题\n## 二级标题\n### 三级标题")
+        == "<b>一级标题</b>\n<b>二级标题</b>\n<b>三级标题</b>"
+    )
+
+
+def test_render_telegram_html_converts_thematic_break_to_separator() -> None:
+    assert render_telegram_html("before\n---\nafter") == "before\n──────────\nafter"

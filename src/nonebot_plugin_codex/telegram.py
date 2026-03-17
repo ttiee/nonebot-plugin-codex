@@ -164,8 +164,70 @@ class TelegramHandlers:
                 )
             )
 
-    def render_agent_panel_text(self, label: str, text: str) -> str:
-        return f"{label}\n{text}" if text else label
+    def format_agent_title(self, panel: AgentPanelState) -> str:
+        icon = "🧠" if panel.agent_key == "main" else "🛠️"
+        return f"{icon} {panel.agent_label}"
+
+    def render_agent_panel_text(
+        self,
+        session,
+        panel: AgentPanelState,
+        text: str,
+    ) -> str:
+        if len(session.agent_order) <= 1:
+            return text
+        title = self.format_agent_title(panel)
+        return f"{title}\n{text}" if text else title
+
+    async def refresh_agent_panel_headers(
+        self,
+        bot: Bot,
+        event: MessageEvent,
+        session,
+    ) -> None:
+        if len(session.agent_order) <= 1:
+            return
+        for agent_key in session.agent_order:
+            panel = session.agent_panels.get(agent_key)
+            if panel is None:
+                continue
+            if panel.progress_message_id is not None and panel.last_progress_text:
+                try:
+                    await self.edit_message(
+                        bot,
+                        chat_id=event.chat.id,
+                        message_id=panel.progress_message_id,
+                        text=self.render_agent_panel_text(
+                            session,
+                            panel,
+                            panel.last_progress_text,
+                        ),
+                    )
+                except Exception as exc:
+                    if not self.is_message_not_modified_error(exc):
+                        pass
+            if panel.stream_message_id is not None and panel.last_stream_text:
+                try:
+                    rendered_text, truncated = self.render_stream_text(
+                        self.render_agent_panel_text(
+                            session,
+                            panel,
+                            panel.last_stream_text,
+                        )
+                    )
+                    if not rendered_text:
+                        continue
+                    panel.stream_message_truncated = truncated
+                    await self.edit_message(
+                        bot,
+                        chat_id=event.chat.id,
+                        message_id=panel.stream_message_id,
+                        text=rendered_text,
+                    )
+                    panel.last_stream_rendered_text = rendered_text
+                except Exception as exc:
+                    if not self.is_message_not_modified_error(exc):
+                        pass
 
     def ensure_agent_panel(
         self,
@@ -192,6 +254,7 @@ class TelegramHandlers:
         for panel in session.agent_panels.values():
             panel.progress_message_id = None
             panel.stream_message_id = None
+            panel.last_progress_text = ""
             panel.last_stream_rendered_text = ""
             panel.stream_message_truncated = False
 
@@ -201,12 +264,17 @@ class TelegramHandlers:
         event: MessageEvent,
         update: AgentPanelUpdate,
     ) -> None:
+        session = self.service.get_session(self.chat_key(event))
+        created_panel = update.agent_key not in session.agent_panels
         panel = self.ensure_agent_panel(
             event,
             agent_key=update.agent_key,
             agent_label=update.agent_label,
         )
-        text = self.render_agent_panel_text(update.agent_label, update.text)
+        panel.last_progress_text = update.text
+        if created_panel and panel.agent_key != "main" and len(session.agent_order) == 2:
+            await self.refresh_agent_panel_headers(bot, event, session)
+        text = self.render_agent_panel_text(session, panel, update.text)
         if panel.progress_message_id is None:
             message = await self.send_event_message(bot, event, text)
             panel.progress_message_id = getattr(message, "message_id", None)
@@ -236,12 +304,16 @@ class TelegramHandlers:
         event: MessageEvent,
         update: AgentPanelUpdate,
     ) -> None:
+        session = self.service.get_session(self.chat_key(event))
+        created_panel = update.agent_key not in session.agent_panels
         panel = self.ensure_agent_panel(
             event,
             agent_key=update.agent_key,
             agent_label=update.agent_label,
         )
-        text = self.render_agent_panel_text(update.agent_label, update.text)
+        if created_panel and panel.agent_key != "main" and len(session.agent_order) == 2:
+            await self.refresh_agent_panel_headers(bot, event, session)
+        text = self.render_agent_panel_text(session, panel, update.text)
         rendered_text, truncated = self.render_stream_text(text)
         if not rendered_text:
             return
@@ -274,6 +346,7 @@ class TelegramHandlers:
         agent_label: str,
         text: str,
     ) -> None:
+        session = self.service.get_session(self.chat_key(event))
         panel = self.ensure_agent_panel(
             event,
             agent_key=agent_key,
@@ -286,7 +359,7 @@ class TelegramHandlers:
                 bot,
                 chat_id=event.chat.id,
                 message_id=panel.progress_message_id,
-                text=self.render_agent_panel_text(agent_label, text),
+                text=self.render_agent_panel_text(session, panel, text),
             )
         except Exception:
             pass
