@@ -831,7 +831,28 @@ class CodexBridgeService:
             parsed = datetime.fromtimestamp(value, tz=timezone.utc)
         except (OverflowError, OSError, ValueError):
             return "未知"
-        return parsed.astimezone().strftime("%Y-%m-%d %H:%M:%S")
+        return parsed.astimezone().strftime("%m-%d %H:%M:%S")
+
+    def _format_status_bucket_label(self, bucket: object, fallback: str) -> str:
+        if not isinstance(bucket, dict):
+            return fallback
+        window_minutes = bucket.get("windowDurationMins")
+        if window_minutes == 300:
+            return "5小时"
+        if window_minutes == 10080:
+            return "1周"
+        if isinstance(window_minutes, int) and window_minutes > 0:
+            if window_minutes % (60 * 24 * 7) == 0:
+                weeks = window_minutes // (60 * 24 * 7)
+                return f"{weeks}周"
+            if window_minutes % (60 * 24) == 0:
+                days = window_minutes // (60 * 24)
+                return f"{days}天"
+            if window_minutes % 60 == 0:
+                hours = window_minutes // 60
+                return f"{hours}小时"
+            return f"{window_minutes}分钟"
+        return fallback
 
     def _is_noise_history_text(self, text: str) -> bool:
         lowered = text.strip().lower()
@@ -2132,9 +2153,10 @@ class CodexBridgeService:
 
     def _format_status_rate_limit_bucket(
         self,
-        label: str,
         bucket: object,
+        fallback_label: str,
     ) -> list[str]:
+        label = self._format_status_bucket_label(bucket, fallback_label)
         if not isinstance(bucket, dict):
             return [f"{label}：暂不可用", f"{label} 刷新时间：未知"]
 
@@ -2145,8 +2167,8 @@ class CodexBridgeService:
         used_percent = max(0, min(used_percent, 100))
         remaining_percent = max(0, 100 - used_percent)
         return [
-            f"{label}：{used_percent}% 已用，{remaining_percent}% 剩余",
-            f"{label} 刷新时间：{self._format_status_reset_time(bucket.get('resetsAt'))}",
+            f"{label}：剩余 {remaining_percent}%",
+            f"{label}刷新时间：{self._format_status_reset_time(bucket.get('resetsAt'))}",
         ]
 
     async def render_status_panel(
@@ -2164,10 +2186,16 @@ class CodexBridgeService:
                 raise RuntimeError("当前环境未启用 Codex app-server 额度查询。")
             limits = await runner.read_rate_limits()
             lines.extend(
-                self._format_status_rate_limit_bucket("额度 1", limits.get("primary"))
+                self._format_status_rate_limit_bucket(
+                    limits.get("primary"),
+                    "额度 1",
+                )
             )
             lines.extend(
-                self._format_status_rate_limit_bucket("额度 2", limits.get("secondary"))
+                self._format_status_rate_limit_bucket(
+                    limits.get("secondary"),
+                    "额度 2",
+                )
             )
         except Exception as exc:
             lines.extend(["额度状态：暂不可用", str(exc) or "未知错误。"])
