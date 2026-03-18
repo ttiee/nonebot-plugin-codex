@@ -211,41 +211,6 @@ def _format_collab_tool_progress(
 
     return updates
 
-
-def _latest_completed_subagent_status_message(
-    item: dict[str, Any],
-    *,
-    main_thread_id: str,
-) -> str:
-    receiver_ids = item.get("receiverThreadIds")
-    agent_states = item.get("agentsStates")
-    if not isinstance(agent_states, dict):
-        return ""
-
-    ordered_ids: list[str] = []
-    if isinstance(receiver_ids, list):
-        for entry in receiver_ids:
-            if isinstance(entry, str) and entry and entry not in ordered_ids:
-                ordered_ids.append(entry)
-    for entry in agent_states:
-        if isinstance(entry, str) and entry and entry not in ordered_ids:
-            ordered_ids.append(entry)
-
-    latest_message = ""
-    for agent_id in ordered_ids:
-        if _normalize_agent_key(agent_id, main_thread_id=main_thread_id) == "main":
-            continue
-        state = agent_states.get(agent_id)
-        if not isinstance(state, dict):
-            continue
-        if str(state.get("status") or "") != "completed":
-            continue
-        message = state.get("message")
-        if isinstance(message, str) and message.strip():
-            latest_message = message.strip()
-    return latest_message
-
-
 async def _terminate_process(process: Any, timeout: float) -> None:
     if process is None:
         return
@@ -358,8 +323,6 @@ class NativeCodexClient:
     ) -> NativeRunResult:
         diagnostics: list[str] = []
         final_text = ""
-        last_subagent_final_text = ""
-        last_completed_subagent_status_message = ""
         pending_agent_messages: dict[str, str] = {}
         last_streamed_text: dict[str, str] = {}
         last_compaction_notice: dict[str, str] = {}
@@ -432,13 +395,6 @@ class NativeCodexClient:
                     )
                     continue
                 if item_type == "collabAgentToolCall":
-                    if method == "item/completed":
-                        latest_message = _latest_completed_subagent_status_message(
-                            item,
-                            main_thread_id=thread_id,
-                        )
-                        if latest_message:
-                            last_completed_subagent_status_message = latest_message
                     collab_updates = _format_collab_tool_progress(
                         item,
                         main_thread_id=thread_id,
@@ -467,8 +423,6 @@ class NativeCodexClient:
                         if phase != "commentary":
                             if agent_key == "main":
                                 final_text = stripped
-                            else:
-                                last_subagent_final_text = stripped
                     continue
 
             if method == "item/agentMessage/delta":
@@ -503,6 +457,12 @@ class NativeCodexClient:
                 continue
 
             if method == "turn/completed":
+                completed_agent_key = _normalize_agent_key(
+                    params.get("threadId"),
+                    main_thread_id=thread_id,
+                )
+                if completed_agent_key != "main":
+                    continue
                 turn = params.get("turn")
                 if not isinstance(turn, dict):
                     return NativeRunResult(
@@ -525,15 +485,6 @@ class NativeCodexClient:
                         if buffered_text:
                             final_text = buffered_text
                             await emit_stream_update("main", final_text)
-                if not final_text and last_subagent_final_text:
-                    final_text = last_subagent_final_text
-                    await emit_stream_update("main", final_text)
-                if (
-                    not final_text
-                    and last_completed_subagent_status_message
-                ):
-                    final_text = last_completed_subagent_status_message
-                    await emit_stream_update("main", final_text)
                 status = turn.get("status")
                 error = turn.get("error")
                 exit_code = 0 if status == "completed" and error is None else 1
@@ -634,6 +585,13 @@ class NativeCodexClient:
             cursor = next_cursor
 
         return threads
+
+    async def read_rate_limits(self) -> dict[str, Any]:
+        result = await self._request("account/rateLimits/read", {})
+        snapshot = result.get("rateLimits")
+        if not isinstance(snapshot, dict):
+            raise RuntimeError("account/rateLimits/read 缺少 rateLimits 响应。")
+        return snapshot
 
     def _permission_params(self, permission_mode: str) -> dict[str, str]:
         if permission_mode == "safe":

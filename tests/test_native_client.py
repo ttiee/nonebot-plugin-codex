@@ -788,7 +788,7 @@ async def test_native_client_keeps_main_final_text_after_subagent_error() -> Non
 
 
 @pytest.mark.asyncio
-async def test_native_client_uses_subagent_final_answer_when_main_turn_has_no_final_text(
+async def test_native_client_does_not_use_subagent_final_answer_as_main_final_text(
 ) -> None:
     process = FakeProcess(
         stdout=FakeStdout(
@@ -889,11 +889,11 @@ async def test_native_client_uses_subagent_final_answer_when_main_turn_has_no_fi
     result = await client.run_turn(thread.thread_id, "hello")
 
     assert result.exit_code == 0
-    assert result.final_text == "subagent final answer"
+    assert result.final_text == ""
 
 
 @pytest.mark.asyncio
-async def test_native_client_uses_completed_wait_message_when_no_agent_final_text_exists(
+async def test_native_client_does_not_use_wait_status_message_as_main_final_text(
 ) -> None:
     process = FakeProcess(
         stdout=FakeStdout(
@@ -978,7 +978,116 @@ async def test_native_client_uses_completed_wait_message_when_no_agent_final_tex
     result = await client.run_turn(thread.thread_id, "hello")
 
     assert result.exit_code == 0
-    assert result.final_text == "tests ready"
+    assert result.final_text == ""
+
+
+@pytest.mark.asyncio
+async def test_native_client_ignores_subagent_turn_completed_until_main_turn_finishes(
+) -> None:
+    process = FakeProcess(
+        stdout=FakeStdout(
+            [
+                json.dumps({"jsonrpc": "2.0", "id": 1, "result": {}}) + "\n",
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 2,
+                        "result": {
+                            "thread": {
+                                "id": "thread-main",
+                                "name": "Main Thread",
+                                "updatedAt": "2025-03-01T00:00:00Z",
+                                "cwd": "/tmp/work",
+                                "source": "cli",
+                            }
+                        },
+                    }
+                )
+                + "\n",
+                json.dumps({"jsonrpc": "2.0", "id": 3, "result": {}}) + "\n",
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "turn/started",
+                        "params": {"threadId": "thread-main"},
+                    }
+                )
+                + "\n",
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "item/completed",
+                        "params": {
+                            "threadId": "thread-sub-1",
+                            "item": {
+                                "id": "msg-sub-final",
+                                "type": "agentMessage",
+                                "text": "subagent final answer",
+                                "phase": "final_answer",
+                            },
+                        },
+                    }
+                )
+                + "\n",
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "turn/completed",
+                        "params": {
+                            "threadId": "thread-sub-1",
+                            "turn": {"status": "completed", "error": None},
+                        },
+                    }
+                )
+                + "\n",
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "item/completed",
+                        "params": {
+                            "threadId": "thread-main",
+                            "item": {
+                                "id": "msg-main-final",
+                                "type": "agentMessage",
+                                "text": "main final answer",
+                                "phase": "final_answer",
+                            },
+                        },
+                    }
+                )
+                + "\n",
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "turn/completed",
+                        "params": {
+                            "threadId": "thread-main",
+                            "turn": {"status": "completed", "error": None},
+                        },
+                    }
+                )
+                + "\n",
+            ]
+        ),
+        stdin=FakeStdin(),
+    )
+
+    async def launcher(*_args: Any, **_kwargs: Any) -> FakeProcess:
+        return process
+
+    client = NativeCodexClient(binary="codex", launcher=launcher)
+
+    thread = await client.start_thread(
+        workdir="/tmp/work",
+        model="gpt-5",
+        reasoning_effort="xhigh",
+        permission_mode="safe",
+    )
+    result = await client.run_turn(thread.thread_id, "hello")
+
+    assert result.exit_code == 0
+    assert result.thread_id == "thread-main"
+    assert result.final_text == "main final answer"
 
 
 @pytest.mark.asyncio

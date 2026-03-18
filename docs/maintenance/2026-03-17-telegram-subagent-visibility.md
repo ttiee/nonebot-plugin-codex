@@ -35,11 +35,11 @@ When the plugin uses the native `codex app-server` lane and Codex delegates work
 - In follow-up testing, main-agent final text could still be lost when it only existed in
   `item/agentMessage/delta` frames, because the native fallback looked up the wrong
   buffered key on `turn/completed`.
-- In successful multi-agent turns where the main thread produced no separate final-answer
-  message after `wait`, the bridge also discarded:
-  - subagent `agentMessage` items with `phase: "final_answer"`
-  - completed `wait.agentsStates[*].message` payloads
-  This left Telegram with a finished run but an empty `final_text`.
+- Another follow-up issue appeared after multi-agent support landed: the native runner
+  treated any `turn/completed` as the end of the active run, including subagent turns.
+  That could bind later follow-up prompts to the subagent thread instead of the main
+  thread, and it also made the bridge vulnerable to leaking subagent result text into
+  the main-agent final-answer path.
 - When that happened, Telegram could still finalize the main progress panel as
   `Codex 已完成。`, then separately send `Codex 已完成，但没有返回可展示的最终文本。`,
   which made successful-looking runs appear to stop right after a subagent failure.
@@ -61,9 +61,8 @@ When the plugin uses the native `codex app-server` lane and Codex delegates work
 - Confirm that progress updates mention both the main agent and the subagent state.
 - Add a native-client regression where a subagent reports `errored` but the main agent
   still produces a final answer through delta-only fallback.
-- Add native-client regressions where:
-  - only a subagent `final_answer` exists before `turn/completed`
-  - only `wait.agentsStates[*].message` exists before `turn/completed`
-  and confirm the bridge still returns a non-empty `final_text`.
+- Add a native-client regression where a subagent emits its own `turn/completed`
+  before the main thread finishes, and confirm the client waits for the main
+  `turn/completed` before returning or updating the stored thread id.
 - Confirm that Telegram uses `Codex 已完成，但没有返回可展示的最终文本。` for the main
   progress panel instead of a plain `Codex 已完成。` when no final text is available.
