@@ -10,14 +10,14 @@ try:
 except ModuleNotFoundError:  # pragma: no cover - Python < 3.11
     import tomli as tomllib
 from pathlib import Path
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any
 from collections.abc import Callable, Awaitable
 from dataclasses import field, asdict, dataclass
 
 from nonebot.adapters.telegram.model import InlineKeyboardButton, InlineKeyboardMarkup
 
-from .native_client import NativeAgentUpdate, NativeCodexClient
+from .native_client import NativeAgentUpdate, NativeCodexClient, NativeTokenUsage
 from .protocol_io import NdjsonProcessReader, ProtocolStreamError
 
 @dataclass(slots=True)
@@ -125,6 +125,8 @@ class ChatSession:
     progress_lines: list[str] = field(default_factory=list)
     diagnostics: list[str] = field(default_factory=list)
     cancel_requested: bool = False
+    context_used_tokens: int | None = None
+    context_window_tokens: int | None = None
 
 
 @dataclass(slots=True)
@@ -820,6 +822,15 @@ class CodexBridgeService:
         parsed = self._parse_history_time(value)
         if parsed is None:
             return value
+        return parsed.astimezone().strftime("%Y-%m-%d %H:%M:%S")
+
+    def _format_status_reset_time(self, value: object) -> str:
+        if not isinstance(value, (int, float)):
+            return "未知"
+        try:
+            parsed = datetime.fromtimestamp(value, tz=timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            return "未知"
         return parsed.astimezone().strftime("%Y-%m-%d %H:%M:%S")
 
     def _is_noise_history_text(self, text: str) -> bool:
@@ -2110,41 +2121,53 @@ class CodexBridgeService:
             raise ValueError("未知状态面板操作。")
         return self._replace_status_panel_state(chat_key, previous=panel)
 
+    def _format_status_context_line(self, session: ChatSession | None) -> str:
+        if session is None:
+            return "上下文：暂不可用"
+        used_tokens = session.context_used_tokens
+        window_tokens = session.context_window_tokens
+        if not isinstance(used_tokens, int) or not isinstance(window_tokens, int):
+            return "上下文：暂不可用"
+        return f"上下文：{used_tokens:,} / {window_tokens:,} tokens"
+
+    def _format_status_rate_limit_bucket(
+        self,
+        label: str,
+        bucket: object,
+    ) -> list[str]:
+        if not isinstance(bucket, dict):
+            return [f"{label}：暂不可用", f"{label} 刷新时间：未知"]
+
+        used_percent = bucket.get("usedPercent")
+        if not isinstance(used_percent, int):
+            return [f"{label}：暂不可用", f"{label} 刷新时间：未知"]
+
+        used_percent = max(0, min(used_percent, 100))
+        remaining_percent = max(0, 100 - used_percent)
+        return [
+            f"{label}：{used_percent}% 已用，{remaining_percent}% 剩余",
+            f"{label} 刷新时间：{self._format_status_reset_time(bucket.get('resetsAt'))}",
+        ]
+
     async def render_status_panel(
         self, chat_key: str
     ) -> tuple[str, InlineKeyboardMarkup]:
         panel = self.get_status_panel(chat_key)
-        now = datetime.now().astimezone()
-        current_window = "上午窗口" if now.hour < 12 else "下午窗口"
-        lines = ["当前额度状态", f"当前窗口：{current_window}"]
+        lines = [
+            "当前额度状态",
+            self._format_status_context_line(self.sessions.get(chat_key)),
+        ]
 
         runner = self._spawn_native_client()
         try:
             if runner is None:
-                raise RuntimeError("Native Codex client is not configured.")
+                raise RuntimeError("当前环境未启用 Codex app-server 额度查询。")
             limits = await runner.read_rate_limits()
-            primary = limits.get("primary")
-            if not isinstance(primary, dict):
-                raise RuntimeError("额度状态响应缺少 primary 字段。")
-
-            used_percent = int(primary.get("usedPercent") or 0)
-            remaining_percent = max(0, 100 - used_percent)
-            resets_at = int(primary.get("resetsAt") or 0)
-            if resets_at > 0:
-                reset_time = datetime.fromtimestamp(resets_at, tz=now.tzinfo)
-            else:
-                reset_time = now
-            delta = max(reset_time - now, timedelta())
-            hours, remainder = divmod(int(delta.total_seconds()), 3600)
-            minutes = remainder // 60
-
             lines.extend(
-                [
-                    f"已使用：{used_percent}%",
-                    f"剩余：{remaining_percent}%",
-                    f"刷新时间：{reset_time.strftime('%Y-%m-%d %H:%M:%S %z')}",
-                    f"距离刷新：{hours}小时{minutes}分钟",
-                ]
+                self._format_status_rate_limit_bucket("额度 1", limits.get("primary"))
+            )
+            lines.extend(
+                self._format_status_rate_limit_bucket("额度 2", limits.get("secondary"))
             )
         except Exception as exc:
             lines.extend(["额度状态：暂不可用", str(exc) or "未知错误。"])
@@ -3483,6 +3506,10 @@ class CodexBridgeService:
                 reasoning_effort=preferences.reasoning_effort,
                 on_progress=forward_progress,
                 on_stream_text=forward_stream_text,
+                on_token_usage=lambda update: self._apply_token_usage_update(
+                    session,
+                    update,
+                ),
             )
             final_thread_id = native_result.thread_id or thread.thread_id
             self._set_native_thread_id(session, final_thread_id)
@@ -3520,3 +3547,11 @@ class CodexBridgeService:
             session.native_runner = None
             session.runner_task = None
             session.cancel_requested = False
+
+    def _apply_token_usage_update(
+        self,
+        session: ChatSession,
+        update: NativeTokenUsage,
+    ) -> None:
+        session.context_used_tokens = update.total_tokens
+        session.context_window_tokens = update.model_context_window

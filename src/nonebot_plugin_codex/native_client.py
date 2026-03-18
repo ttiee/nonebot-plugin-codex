@@ -15,7 +15,14 @@ class NativeAgentUpdate:
     text: str
 
 
-Callback = Callable[[NativeAgentUpdate], object]
+@dataclass(slots=True)
+class NativeTokenUsage:
+    total_tokens: int
+    model_context_window: int | None = None
+
+
+Callback = Callable[[Any], object]
+TokenUsageCallback = Callable[[NativeTokenUsage], object]
 ProcessLauncher = Callable[..., Awaitable[Any]]
 
 
@@ -65,7 +72,7 @@ def _thread_summary_from_payload(thread: dict[str, Any]) -> NativeThreadSummary:
     )
 
 
-async def _maybe_call(callback: Callback | None, update: NativeAgentUpdate) -> None:
+async def _maybe_call(callback: Callback | None, update: Any) -> None:
     if callback is None:
         return
     result = callback(update)
@@ -320,6 +327,7 @@ class NativeCodexClient:
         reasoning_effort: str | None = None,
         on_progress: Callback | None = None,
         on_stream_text: Callback | None = None,
+        on_token_usage: TokenUsageCallback | None = None,
     ) -> NativeRunResult:
         diagnostics: list[str] = []
         final_text = ""
@@ -454,6 +462,29 @@ class NativeCodexClient:
                 )
                 notice = _extract_compaction_notice(params) or "已压缩较早对话上下文。"
                 await emit_compaction_notice(agent_key, notice)
+
+            if method == "thread/tokenUsage/updated":
+                token_usage = params.get("tokenUsage")
+                if not isinstance(token_usage, dict):
+                    continue
+                total = token_usage.get("total")
+                total_tokens = (
+                    total.get("totalTokens") if isinstance(total, dict) else None
+                )
+                model_context_window = token_usage.get("modelContextWindow")
+                if not isinstance(total_tokens, int):
+                    continue
+                if model_context_window is not None and not isinstance(
+                    model_context_window, int
+                ):
+                    model_context_window = None
+                await _maybe_call(
+                    on_token_usage,
+                    NativeTokenUsage(
+                        total_tokens=total_tokens,
+                        model_context_window=model_context_window,
+                    ),
+                )
                 continue
 
             if method == "turn/completed":
