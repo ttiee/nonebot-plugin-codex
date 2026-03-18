@@ -158,20 +158,6 @@ async def test_native_client_run_turn_reports_context_compaction_progress() -> N
                                 "type": "contextCompaction",
                                 "summary": "已压缩较早对话上下文。",
                             },
-=======
-                json.dumps(
-                    {
-                        "jsonrpc": "2.0",
-                        "id": 2,
-                        "result": {
-                            "thread": {
-                                "id": "thread-1",
-                                "name": "Thread One",
-                                "updatedAt": "2025-03-01T00:00:00Z",
-                                "cwd": "/tmp/work",
-                                "source": "cli",
-                            }
->>>>>>> ✨ feat(telegram): 增强状态面板展示上下文与额度信息
                         },
                     }
                 )
