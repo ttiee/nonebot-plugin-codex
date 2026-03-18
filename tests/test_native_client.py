@@ -293,6 +293,112 @@ async def test_native_client_reports_thread_token_usage_updates() -> None:
 
 
 @pytest.mark.asyncio
+async def test_native_client_ignores_subagent_thread_token_usage_updates() -> None:
+    process = FakeProcess(
+        stdout=FakeStdout(
+            [
+                json.dumps({"jsonrpc": "2.0", "id": 1, "result": {}}) + "\n",
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 2,
+                        "result": {
+                            "thread": {
+                                "id": "thread-main",
+                                "name": "Main Thread",
+                                "updatedAt": "2025-03-01T00:00:00Z",
+                                "cwd": "/tmp/work",
+                                "source": "cli",
+                            }
+                        },
+                    }
+                )
+                + "\n",
+                json.dumps({"jsonrpc": "2.0", "id": 3, "result": {}}) + "\n",
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "thread/tokenUsage/updated",
+                        "params": {
+                            "threadId": "thread-sub-1",
+                            "turnId": "turn-1",
+                            "tokenUsage": {
+                                "modelContextWindow": 999999,
+                                "total": {"totalTokens": 55555},
+                                "last": {
+                                    "cachedInputTokens": 0,
+                                    "inputTokens": 100,
+                                    "outputTokens": 20,
+                                    "reasoningOutputTokens": 30,
+                                    "totalTokens": 150,
+                                },
+                            },
+                        },
+                    }
+                )
+                + "\n",
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "thread/tokenUsage/updated",
+                        "params": {
+                            "threadId": "thread-main",
+                            "turnId": "turn-1",
+                            "tokenUsage": {
+                                "modelContextWindow": 200000,
+                                "total": {"totalTokens": 12345},
+                                "last": {
+                                    "cachedInputTokens": 0,
+                                    "inputTokens": 100,
+                                    "outputTokens": 20,
+                                    "reasoningOutputTokens": 30,
+                                    "totalTokens": 150,
+                                },
+                            },
+                        },
+                    }
+                )
+                + "\n",
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "turn/completed",
+                        "params": {
+                            "threadId": "thread-main",
+                            "turn": {"status": "completed", "error": None},
+                        },
+                    }
+                )
+                + "\n",
+            ]
+        ),
+        stdin=FakeStdin(),
+    )
+
+    async def launcher(*_args: Any, **_kwargs: Any) -> FakeProcess:
+        return process
+
+    client = NativeCodexClient(binary="codex", launcher=launcher)
+    thread = await client.start_thread(
+        workdir="/tmp/work",
+        model="gpt-5",
+        reasoning_effort="xhigh",
+        permission_mode="safe",
+    )
+    token_usage_updates: list[tuple[int, int | None]] = []
+
+    await client.run_turn(
+        thread.thread_id,
+        "hello",
+        on_token_usage=lambda update: token_usage_updates.append(
+            (update.total_tokens, update.model_context_window)
+        ),
+    )
+
+    assert token_usage_updates == [(12345, 200000)]
+
+
+@pytest.mark.asyncio
 async def test_native_client_compact_thread_waits_for_compaction_notice() -> None:
     process = FakeProcess(
         stdout=FakeStdout(
@@ -763,6 +869,91 @@ async def test_native_client_uses_main_delta_fallback_for_final_text() -> None:
 
     assert result.exit_code == 0
     assert result.final_text == "main final only from delta"
+
+
+@pytest.mark.asyncio
+async def test_native_client_does_not_use_commentary_delta_as_main_final_text() -> None:
+    process = FakeProcess(
+        stdout=FakeStdout(
+            [
+                json.dumps({"jsonrpc": "2.0", "id": 1, "result": {}}) + "\n",
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 2,
+                        "result": {
+                            "thread": {
+                                "id": "thread-1",
+                                "name": "Thread One",
+                                "updatedAt": "2025-03-01T00:00:00Z",
+                                "cwd": "/tmp/work",
+                                "source": "cli",
+                            }
+                        },
+                    }
+                )
+                + "\n",
+                json.dumps({"jsonrpc": "2.0", "id": 3, "result": {}}) + "\n",
+                json.dumps({"jsonrpc": "2.0", "method": "turn/started", "params": {}})
+                + "\n",
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "item/started",
+                        "params": {
+                            "threadId": "thread-1",
+                            "item": {
+                                "id": "msg-main-commentary",
+                                "type": "agentMessage",
+                                "text": "",
+                                "phase": "commentary",
+                            },
+                        },
+                    }
+                )
+                + "\n",
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "item/agentMessage/delta",
+                        "params": {
+                            "threadId": "thread-1",
+                            "itemId": "msg-main-commentary",
+                            "delta": "main commentary only",
+                        },
+                    }
+                )
+                + "\n",
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "turn/completed",
+                        "params": {
+                            "threadId": "thread-1",
+                            "turn": {"status": "completed", "error": None},
+                        },
+                    }
+                )
+                + "\n",
+            ]
+        ),
+        stdin=FakeStdin(),
+    )
+
+    async def launcher(*_args: Any, **_kwargs: Any) -> FakeProcess:
+        return process
+
+    client = NativeCodexClient(binary="codex", launcher=launcher)
+    thread = await client.start_thread(
+        workdir="/tmp/work",
+        model="gpt-5",
+        reasoning_effort="xhigh",
+        permission_mode="safe",
+    )
+    result = await client.run_turn(thread.thread_id, "hello")
+
+    assert result.exit_code == 0
+    assert result.final_text == ""
 
 
 @pytest.mark.asyncio

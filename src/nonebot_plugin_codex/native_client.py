@@ -332,6 +332,7 @@ class NativeCodexClient:
         diagnostics: list[str] = []
         final_text = ""
         pending_agent_messages: dict[str, str] = {}
+        pending_agent_message_phases: dict[str, str | None] = {}
         last_streamed_text: dict[str, str] = {}
         last_compaction_notice: dict[str, str] = {}
 
@@ -421,11 +422,25 @@ class NativeCodexClient:
                     continue
                 if item_type == "agentMessage":
                     item_id = item.get("id")
-                    if isinstance(item_id, str) and item_id:
-                        pending_agent_messages.pop(f"{agent_key}:{item_id}", None)
+                    phase = item.get("phase")
+                    item_key = (
+                        f"{agent_key}:{item_id}"
+                        if isinstance(item_id, str) and item_id
+                        else None
+                    )
+                    if item_key is not None:
+                        pending_agent_message_phases[item_key] = (
+                            phase if isinstance(phase, str) else None
+                        )
+                    if (
+                        method == "item/completed"
+                        and isinstance(item_id, str)
+                        and item_id
+                    ):
+                        pending_agent_messages.pop(item_key, None)
+                        pending_agent_message_phases.pop(item_key, None)
                     text = item.get("text")
                     if isinstance(text, str) and text.strip():
-                        phase = item.get("phase")
                         stripped = text.strip()
                         await emit_stream_update(agent_key, stripped)
                         if phase != "commentary":
@@ -464,6 +479,12 @@ class NativeCodexClient:
                 await emit_compaction_notice(agent_key, notice)
 
             if method == "thread/tokenUsage/updated":
+                agent_key = _normalize_agent_key(
+                    params.get("threadId"),
+                    main_thread_id=thread_id,
+                )
+                if agent_key != "main":
+                    continue
                 token_usage = params.get("tokenUsage")
                 if not isinstance(token_usage, dict):
                     continue
@@ -511,6 +532,10 @@ class NativeCodexClient:
                         ),
                         None,
                     )
+                    if fallback_key is not None:
+                        fallback_phase = pending_agent_message_phases.get(fallback_key)
+                        if fallback_phase == "commentary":
+                            fallback_key = None
                     if fallback_key is not None:
                         buffered_text = pending_agent_messages[fallback_key].strip()
                         if buffered_text:
