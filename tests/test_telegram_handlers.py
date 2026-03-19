@@ -60,6 +60,7 @@ class FakeBot:
         self.sent: list[dict[str, Any]] = []
         self.edited: list[dict[str, Any]] = []
         self.answered: list[dict[str, Any]] = []
+        self.chat_actions: list[dict[str, Any]] = []
 
     async def send(self, event: FakeEvent, text: str, **kwargs: Any) -> SimpleNamespace:
         payload = {"chat_id": event.chat.id, "text": text, **kwargs}
@@ -87,6 +88,10 @@ class FakeBot:
 
     async def answer_callback_query(self, callback_id: str, **kwargs: Any) -> None:
         self.answered.append({"id": callback_id, **kwargs})
+
+    async def send_chat_action(self, chat_id: int, action: str, **kwargs: Any) -> bool:
+        self.chat_actions.append({"chat_id": chat_id, "action": action, **kwargs})
+        return True
 
 
 class HtmlFailingBot(FakeBot):
@@ -165,6 +170,18 @@ class StreamTrackingBot(FakeBot):
         )
         if text == self.expected_text:
             self.seen_event.set()
+
+
+class TypingTrackingBot(FakeBot):
+    def __init__(self, seen_event: asyncio.Event) -> None:
+        super().__init__()
+        self.seen_event = seen_event
+
+    async def send_chat_action(self, chat_id: int, action: str, **kwargs: Any) -> bool:
+        result = await super().send_chat_action(chat_id, action, **kwargs)
+        if action == "typing":
+            self.seen_event.set()
+        return result
 
 
 class TimedBot(FakeBot):
@@ -846,6 +863,49 @@ async def test_execute_prompt_flushes_pending_stream_updates_on_timer(
         payload["message_id"] == 2 and payload["text"] == "abcd"
         for payload in bot.edited
     )
+
+
+@pytest.mark.asyncio
+async def test_execute_prompt_sends_typing_actions_until_completion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = FakeService()
+    handlers = TelegramHandlers(service)
+    seen_event = asyncio.Event()
+    bot = TypingTrackingBot(seen_event)
+
+    monkeypatch.setattr("nonebot_plugin_codex.telegram.CHAT_MESSAGE_INTERVAL", 0.0)
+    monkeypatch.setattr("nonebot_plugin_codex.telegram.STREAM_FLUSH_INTERVAL", 0.01)
+    monkeypatch.setattr("nonebot_plugin_codex.telegram.TYPING_ACTION_INTERVAL", 0.01)
+
+    async def scripted_run_prompt(
+        chat_key: str,
+        prompt: str,
+        *,
+        mode_override: str | None = None,
+        on_progress=None,
+        on_stream_text=None,
+    ) -> Any:
+        assert chat_key == "private_1"
+        assert prompt == "hello"
+        assert mode_override is None
+        await asyncio.wait_for(seen_event.wait(), timeout=0.1)
+        await asyncio.sleep(0.03)
+        return SimpleNamespace(
+            cancelled=False,
+            exit_code=0,
+            final_text="done",
+            notice="",
+            diagnostics=[],
+        )
+
+    service.run_prompt = scripted_run_prompt
+
+    await handlers.execute_prompt(bot, FakeEvent(""), "hello")
+
+    assert len(bot.chat_actions) >= 2
+    assert all(payload["chat_id"] == 1 for payload in bot.chat_actions)
+    assert all(payload["action"] == "typing" for payload in bot.chat_actions)
 
 
 @pytest.mark.asyncio

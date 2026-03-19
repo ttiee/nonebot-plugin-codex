@@ -46,6 +46,7 @@ PARSE_ENTITIES_ERROR = "can't parse entities"
 MESSAGE_NOT_MODIFIED_ERROR = "message is not modified"
 STREAM_FLUSH_INTERVAL = 0.5
 CHAT_MESSAGE_INTERVAL = 1.0
+TYPING_ACTION_INTERVAL = 4.0
 
 
 class TelegramHandlers:
@@ -109,6 +110,16 @@ class TelegramHandlers:
             result = await operation()
             self._chat_message_sent_at[chat_id] = time.monotonic()
             return result
+
+    async def send_typing_action(self, bot: Bot, chat_id: int) -> None:
+        if not hasattr(bot, "send_chat_action"):
+            return
+        try:
+            await self.retry_telegram_call(
+                lambda: bot.send_chat_action(chat_id=chat_id, action="typing")
+            )
+        except Exception:
+            return
 
     async def send_event_message(
         self, bot: Bot, event: MessageEvent, text: str, **kwargs: object
@@ -500,6 +511,12 @@ class TelegramHandlers:
         pending_stream_updates: dict[str, AgentPanelUpdate] = {}
         scheduled_flushes: dict[str, asyncio.Task[None]] = {}
         flush_lock = asyncio.Lock()
+        typing_task: asyncio.Task[None] | None = None
+
+        async def typing_heartbeat() -> None:
+            while True:
+                await self.send_typing_action(bot, event.chat.id)
+                await asyncio.sleep(TYPING_ACTION_INTERVAL)
 
         async def on_progress(update: AgentPanelUpdate) -> None:
             await self.update_progress(bot, event, update)
@@ -543,6 +560,8 @@ class TelegramHandlers:
                 return
             await flush_stream_text(update.agent_key)
 
+        typing_task = asyncio.create_task(typing_heartbeat())
+
         try:
             result = await self.service.run_prompt(
                 chat_key,
@@ -559,6 +578,10 @@ class TelegramHandlers:
                 bot, event, "Codex 正在运行中，请等待完成或使用 /stop。"
             )
             return
+        finally:
+            if typing_task is not None:
+                typing_task.cancel()
+                await asyncio.gather(typing_task, return_exceptions=True)
 
         for task in scheduled_flushes.values():
             task.cancel()

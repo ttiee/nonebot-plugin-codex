@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import subprocess
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -9,6 +10,7 @@ from pathlib import Path
 
 
 SECTION_TITLES = {
+    "breaking": "Breaking Changes",
     "feat": "Features",
     "fix": "Fixes",
     "perf": "Performance",
@@ -21,6 +23,7 @@ SECTION_TITLES = {
     "other": "Changes",
 }
 SECTION_ORDER = [
+    "breaking",
     "feat",
     "fix",
     "perf",
@@ -32,6 +35,11 @@ SECTION_ORDER = [
     "chore",
     "other",
 ]
+CONVENTIONAL_COMMIT_PATTERN = re.compile(
+    r"^(?P<type>[a-zA-Z]+)(?:\((?P<scope>[^)]+)\))?(?P<breaking>!)?: (?P<description>.+)$"
+)
+PULL_REQUEST_SUFFIX_PATTERN = re.compile(r"^(?P<description>.+?)\s+\(#(?P<pr>\d+)\)$")
+VERSION_PATTERN = re.compile(r"^v?\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,6 +48,9 @@ class ReleaseNoteItem:
     scope: str | None
     description: str
     short_hash: str
+    commit_hash: str | None = None
+    pull_request: int | None = None
+    breaking: bool = False
 
 
 def run_git(args: Sequence[str]) -> str:
@@ -68,20 +79,61 @@ def find_previous_tag(current_tag: str) -> str | None:
     return tags[index - 1]
 
 
-def parse_commit_subject(subject: str) -> tuple[str, str | None, str]:
-    if ": " not in subject:
-        return "other", None, subject
+def extract_pull_request(description: str) -> tuple[str, int | None]:
+    match = PULL_REQUEST_SUFFIX_PATTERN.match(description)
+    if match is None:
+        return description, None
+    return match.group("description"), int(match.group("pr"))
 
-    prefix, description = subject.split(": ", 1)
-    prefix = prefix.removesuffix("!")
-    if "(" in prefix and prefix.endswith(")"):
-        commit_type, scope = prefix[:-1].split("(", 1)
-        return normalize_section(commit_type), scope, description
-    return normalize_section(prefix), None, description
+
+def parse_commit_subject(
+    subject: str,
+    *,
+    short_hash: str,
+    commit_hash: str,
+) -> ReleaseNoteItem:
+    match = CONVENTIONAL_COMMIT_PATTERN.match(subject)
+    if match is None:
+        description, pull_request = extract_pull_request(subject)
+        return ReleaseNoteItem(
+            section="other",
+            scope=None,
+            description=description,
+            short_hash=short_hash,
+            commit_hash=commit_hash,
+            pull_request=pull_request,
+        )
+
+    description, pull_request = extract_pull_request(match.group("description"))
+    return ReleaseNoteItem(
+        section=normalize_section(match.group("type")),
+        scope=match.group("scope"),
+        description=description,
+        short_hash=short_hash,
+        commit_hash=commit_hash,
+        pull_request=pull_request,
+        breaking=bool(match.group("breaking")),
+    )
 
 
 def normalize_section(commit_type: str) -> str:
-    return commit_type if commit_type in SECTION_TITLES else "other"
+    normalized = commit_type.lower()
+    return normalized if normalized in SECTION_TITLES else "other"
+
+
+def is_release_noise(item: ReleaseNoteItem) -> bool:
+    description = item.description.lower().strip()
+    if item.scope == "release":
+        return True
+    if item.section not in {"build", "chore"}:
+        return False
+    if description.startswith("release "):
+        return True
+    if description.startswith("prepare release"):
+        return True
+    if description.startswith("bump version to "):
+        return True
+    return VERSION_PATTERN.fullmatch(description) is not None
 
 
 def collect_release_items(
@@ -94,7 +146,7 @@ def collect_release_items(
         [
             "log",
             "--no-merges",
-            "--format=%h%x09%s",
+            "--format=%H%x09%h%x09%s",
             revision_range,
         ]
     )
@@ -102,9 +154,15 @@ def collect_release_items(
     for line in output.splitlines():
         if not line:
             continue
-        short_hash, subject = line.split("\t", 1)
-        section, scope, description = parse_commit_subject(subject)
-        items.append(ReleaseNoteItem(section, scope, description, short_hash))
+        commit_hash, short_hash, subject = line.split("\t", 2)
+        item = parse_commit_subject(
+            subject,
+            short_hash=short_hash,
+            commit_hash=commit_hash,
+        )
+        if is_release_noise(item):
+            continue
+        items.append(item)
     items.reverse()
     return items
 
@@ -115,6 +173,32 @@ def build_compare_url(
     if previous_tag is None:
         return None
     return f"https://github.com/{repo}/compare/{previous_tag}...{current_tag}"
+
+
+def build_commit_url(repo: str, commit_hash: str | None) -> str | None:
+    if not commit_hash:
+        return None
+    return f"https://github.com/{repo}/commit/{commit_hash}"
+
+
+def build_pull_request_url(repo: str, pull_request: int | None) -> str | None:
+    if pull_request is None:
+        return None
+    return f"https://github.com/{repo}/pull/{pull_request}"
+
+
+def render_item(repo: str, item: ReleaseNoteItem) -> str:
+    prefix = f"`{item.scope}`: " if item.scope else ""
+    references: list[str] = []
+    commit_url = build_commit_url(repo, item.commit_hash)
+    if commit_url:
+        references.append(f"[`{item.short_hash}`]({commit_url})")
+    else:
+        references.append(f"`{item.short_hash}`")
+    pull_request_url = build_pull_request_url(repo, item.pull_request)
+    if pull_request_url:
+        references.append(f"[#{item.pull_request}]({pull_request_url})")
+    return f"- {prefix}{item.description} ({', '.join(references)})"
 
 
 def render_release_notes(
@@ -140,7 +224,8 @@ def render_release_notes(
 
     grouped: dict[str, list[ReleaseNoteItem]] = {section: [] for section in SECTION_ORDER}
     for item in items:
-        grouped[item.section].append(item)
+        target_section = "breaking" if item.breaking else item.section
+        grouped[target_section].append(item)
 
     for section in SECTION_ORDER:
         section_items = grouped[section]
@@ -149,12 +234,7 @@ def render_release_notes(
         lines.append(f"## {SECTION_TITLES[section]}")
         lines.append("")
         for item in section_items:
-            if item.scope:
-                lines.append(
-                    f"- `{item.scope}`: {item.description} (`{item.short_hash}`)"
-                )
-            else:
-                lines.append(f"- {item.description} (`{item.short_hash}`)")
+            lines.append(render_item(repo, item))
         lines.append("")
 
     return "\n".join(lines).strip() + "\n"
